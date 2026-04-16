@@ -419,6 +419,105 @@ func testTurboQuantPackedAttentionMatchesMaterializedAttention() async throws {
 }
 
 @Test
+func testTurboQuantPackedAttentionParityMatrixForGroupedQuery() async throws {
+    let queries = MLXArray(Array(0..<256).map { Float32($0) / 32 }).reshaped(1, 16, 2, 8)
+    let keys = MLXArray(Array(0..<320).map { Float32($0) / 24 - 2 }).reshaped(1, 8, 5, 8)
+    let values = MLXArray(Array(0..<320).map { Float32($0) / 40 - 1 }).reshaped(1, 8, 5, 8)
+
+    for seed in [0, 7] {
+        let turbo = KVCacheSimple().toTurboQuant(bits: 3, seed: seed)
+        let packed = turbo.updateTurboQuantPacked(keys: keys, values: values)
+        let materialized = try #require(turbo.getTurboQuantState())
+
+        for chunkSize in [1, 2, 4] {
+            let packedOutput = turboQuantScaledDotProductAttention(
+                queries: queries,
+                packedKeys: packed.0,
+                packedValues: packed.1,
+                scale: 0.5,
+                mask: .none,
+                bits: turbo.turboQuantBits,
+                seed: turbo.turboQuantSeed,
+                sequenceChunkSize: chunkSize
+            )
+            let materializedOutput = MLXFast.scaledDotProductAttention(
+                queries: queries,
+                keys: materialized.0,
+                values: materialized.1,
+                scale: 0.5,
+                mask: .none
+            )
+
+            #expect(
+                allClose(packedOutput, materializedOutput, rtol: 1e-4, atol: 1e-4).item(Bool.self),
+                "seed=\(seed) chunkSize=\(chunkSize)"
+            )
+        }
+    }
+}
+
+@Test
+func testTurboQuantSignVectorIsDeterministicAndNotTriviallyAlternating() async throws {
+    let signA = turboQuantSignVector(dim: 16, seed: 7)
+    let signB = turboQuantSignVector(dim: 16, seed: 7)
+    let signC = turboQuantSignVector(dim: 16, seed: 8)
+
+    #expect(allClose(signA, signB).item(Bool.self))
+    #expect(!allClose(signA, signC).item(Bool.self))
+
+    let alternating = MLXArray([Float32](repeating: 0, count: 16).enumerated().map { index, _ in
+        index.isMultiple(of: 2) ? Float32(-1) : Float32(1)
+    }).reshaped(1, 1, 1, 16)
+
+    #expect(!allClose(signA, alternating).item(Bool.self))
+}
+
+@Test
+func testGroupedQueryTurboQuantShortSequenceUsesMaterializedFallback() async throws {
+    let queries = MLXArray.ones([1, 4, 1, 4], dtype: .float32)
+    let incomingKeys = MLXArray.zeros([1, 2, 1, 4], dtype: .float32)
+    let incomingValues = MLXArray.zeros([1, 2, 1, 4], dtype: .float32)
+    let cachedKeys = MLXArray.ones([1, 2, 3, 4], dtype: .float32) * 2
+    let cachedValues = MLXArray.ones([1, 2, 3, 4], dtype: .float32) * 3
+    let cache = DummyTurboQuantCache(materializedKeys: cachedKeys, materializedValues: cachedValues)
+
+    _ = attentionWithCacheUpdate(
+        queries: queries,
+        keys: incomingKeys,
+        values: incomingValues,
+        cache: cache,
+        scale: 0.5,
+        mask: .none
+    )
+
+    #expect(cache.updateCalls == 1)
+    #expect(cache.packedUpdateCalls == 0)
+}
+
+@Test
+func testGroupedQueryTurboQuantLongSequenceUsesPackedPath() async throws {
+    let queries = MLXArray.ones([1, 4, 1, 4], dtype: .float32)
+    let incomingKeys = MLXArray.zeros([1, 2, 1, 4], dtype: .float32)
+    let incomingValues = MLXArray.zeros([1, 2, 1, 4], dtype: .float32)
+    let cachedKeys = MLXArray.ones([1, 2, 3, 4], dtype: .float32) * 2
+    let cachedValues = MLXArray.ones([1, 2, 3, 4], dtype: .float32) * 3
+    let cache = DummyTurboQuantCache(materializedKeys: cachedKeys, materializedValues: cachedValues)
+    cache.offset = 512
+
+    _ = attentionWithCacheUpdate(
+        queries: queries,
+        keys: incomingKeys,
+        values: incomingValues,
+        cache: cache,
+        scale: 0.5,
+        mask: .none
+    )
+
+    #expect(cache.updateCalls == 0)
+    #expect(cache.packedUpdateCalls == 1)
+}
+
+@Test
 func testKVCacheSimpleCanConvertToTurboQuantCache() async throws {
     let simple = KVCacheSimple()
     let keys = MLXArray(

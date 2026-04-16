@@ -356,13 +356,7 @@ public final class TurboQuantKVCache: BaseKVCache, TurboQuantKVCacheProtocol {
         if let cached = signCache[dim] {
             return cached
         }
-        let defaultSeed: UInt64 = 0x1234_5678_9ABC_DEF0
-        var state: UInt64 = seed == 0 ? defaultSeed : UInt64(bitPattern: Int64(seed))
-        let values: [Float32] = (0..<dim).map { _ in
-            state = state &* 6364136223846793005 &+ 1
-            return (state & 1) == 0 ? -1 : 1
-        }
-        let sign = MLXArray(values).reshaped(1, 1, 1, dim)
+        let sign = turboQuantSignVector(dim: dim, seed: seed)
         signCache[dim] = sign
         return sign
     }
@@ -480,12 +474,16 @@ func materializeTurboQuantHeadRange(
     return materializeTurboQuant(headPacked, bits: bits, seed: seed)
 }
 
-private func turboQuantSignVector(dim: Int, seed: Int) -> MLXArray {
+public func turboQuantSignVector(dim: Int, seed: Int) -> MLXArray {
     let defaultSeed: UInt64 = 0x1234_5678_9ABC_DEF0
     var state: UInt64 = seed == 0 ? defaultSeed : UInt64(bitPattern: Int64(seed))
     let values: [Float32] = (0..<dim).map { _ in
-        state = state &* 6364136223846793005 &+ 1
-        return (state & 1) == 0 ? -1 : 1
+        state = state &+ 0x9E3779B97F4A7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+        z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+        z = z ^ (z >> 31)
+        return ((z >> 63) & 1) == 0 ? -1 : 1
     }
     return MLXArray(values).reshaped(1, 1, 1, dim)
 }

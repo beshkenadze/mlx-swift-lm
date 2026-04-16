@@ -42,6 +42,9 @@ public func attentionWithCacheUpdate(
     scale: Float,
     mask: MLXFast.ScaledDotProductAttentionMaskMode = .none
 ) -> MLXArray {
+    let qHeads = queries.dim(1)
+    let kvHeads = keys.dim(1)
+
     guard let cache else {
         return MLXFast.scaledDotProductAttention(
             queries: queries,
@@ -52,6 +55,22 @@ public func attentionWithCacheUpdate(
         )
     }
     if let turboQuantCache = cache as? TurboQuantKVCacheProtocol {
+        if shouldUseTurboQuantMaterializedFallback(
+            qHeads: qHeads,
+            kvHeads: kvHeads,
+            totalSequenceLength: cache.offset + keys.dim(2),
+            mask: mask,
+            turboQuantBits: turboQuantCache.turboQuantBits
+        ) {
+            let (cachedKeys, cachedValues) = turboQuantCache.updateTurboQuant(keys: keys, values: values)
+            return MLXFast.scaledDotProductAttention(
+                queries: queries,
+                keys: cachedKeys,
+                values: cachedValues,
+                scale: scale,
+                mask: mask
+            )
+        }
         let (packedKeys, packedValues) = turboQuantCache.updateTurboQuantPacked(
             keys: keys, values: values)
         return turboQuantScaledDotProductAttention(
@@ -86,6 +105,27 @@ public func attentionWithCacheUpdate(
             scale: scale,
             mask: mask
         )
+    }
+}
+
+private func shouldUseTurboQuantMaterializedFallback(
+    qHeads: Int,
+    kvHeads: Int,
+    totalSequenceLength: Int,
+    mask: MLXFast.ScaledDotProductAttentionMaskMode,
+    turboQuantBits: Int
+) -> Bool {
+    let isGroupedQuery = qHeads > kvHeads
+    if !isGroupedQuery { return false }
+    if turboQuantBits != 3 { return false }
+
+    switch mask {
+    case .none:
+        return totalSequenceLength <= 256
+    case .causal:
+        return true
+    case .array, .arrays:
+        return false
     }
 }
 
