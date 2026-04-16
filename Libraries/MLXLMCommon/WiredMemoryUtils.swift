@@ -93,6 +93,7 @@ public enum WiredMemoryUtils {
         model: any LanguageModel,
         parameters: GenerateParameters
     ) throws -> [KVCache] {
+        try validateTriAttentionConfiguration(parameters: parameters)
         var cache = model.newCache(parameters: parameters)
 
         switch try model.prepare(input, cache: cache, windowSize: parameters.prefillStepSize) {

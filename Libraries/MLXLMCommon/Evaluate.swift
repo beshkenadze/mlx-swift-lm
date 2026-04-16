@@ -72,6 +72,12 @@ public struct GenerateParameters: Sendable {
     /// Step to begin using a quantized KV cache when kvBits is non-nil (default: 0)
     public var quantizedKVStart: Int
 
+    /// TriAttention KV-cache pruning configuration. v1 supports offline calibration only.
+    public var triAttention: TriAttentionConfiguration?
+
+    /// TurboQuant KV-cache compression configuration.
+    public var turboQuant: TurboQuantConfiguration?
+
     /// Sampling temperature
     public var temperature: Float
 
@@ -108,6 +114,8 @@ public struct GenerateParameters: Sendable {
         kvBits: Int? = nil,
         kvGroupSize: Int = 64,
         quantizedKVStart: Int = 0,
+        triAttention: TriAttentionConfiguration? = nil,
+        turboQuant: TurboQuantConfiguration? = nil,
         temperature: Float = 0.6,
         topP: Float = 1.0,
         topK: Int = 0,
@@ -125,6 +133,8 @@ public struct GenerateParameters: Sendable {
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
         self.quantizedKVStart = quantizedKVStart
+        self.triAttention = triAttention
+        self.turboQuant = turboQuant
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
@@ -553,6 +563,7 @@ public struct TokenIterator: TokenIteratorProtocol {
         prompt: MLXArray, model: any LanguageModel, cache: [KVCache]? = nil,
         parameters: GenerateParameters
     ) throws {
+        try validateTriAttentionConfiguration(parameters: parameters)
         self.model = model
         self.y = .init(tokens: prompt)
         self.cache = cache ?? model.newCache(parameters: parameters)
@@ -586,6 +597,7 @@ public struct TokenIterator: TokenIteratorProtocol {
         input: LMInput, model: any LanguageModel, cache: [KVCache]? = nil,
         parameters: GenerateParameters
     ) throws {
+        try validateTriAttentionConfiguration(parameters: parameters)
         self.model = model
         self.y = input.text
         self.cache = cache ?? model.newCache(parameters: parameters)

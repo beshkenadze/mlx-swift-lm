@@ -219,12 +219,13 @@ extension LanguageModel where Self: KVCacheDimensionProvider {
         let numLayers = kvHeads.count
 
         // Follow Python logic: use RotatingKVCache if maxKVSize is provided
-        if let maxKVSize = parameters?.maxKVSize {
-            return (0 ..< numLayers).map { _ in
+        let caches: [KVCache] = if let maxKVSize = parameters?.maxKVSize {
+            (0 ..< numLayers).map { _ in
                 RotatingKVCache(maxSize: maxKVSize, keep: 4)
             }
         } else {
-            return (0 ..< numLayers).map { _ in KVCacheSimple() }
+            (0 ..< numLayers).map { _ in KVCacheSimple() }
         }
+        return wrapTriAttentionCaches(caches, parameters: parameters)
     }
 }

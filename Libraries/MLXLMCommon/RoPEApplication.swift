@@ -6,6 +6,11 @@ import MLXNN
 
 // MARK: - applyRotaryPosition Helper
 
+public enum RotaryPositionApplicationKind {
+    case query
+    case key
+}
+
 /// Apply rotary position embeddings, using the cache offset when available.
 ///
 /// This function enables models to use a single call site instead of
@@ -19,9 +24,27 @@ import MLXNN
 ///   - rope: A RoPE layer conforming to both `OffsetLayer` and `ArrayOffsetLayer`.
 ///   - x: The input tensor to apply RoPE to.
 ///   - cache: The KV cache (determines offset), or `nil` for offset 0.
+///   - kind: Whether the tensor is a query or key tensor.
 /// - Returns: The input with rotary positional encoding applied.
-public func applyRotaryPosition<R: RoPELayer>(_ rope: R, to x: MLXArray, cache: KVCache?)
+public func applyRotaryPosition<R: RoPELayer>(
+    _ rope: R,
+    to x: MLXArray,
+    cache: KVCache?,
+    kind: RotaryPositionApplicationKind = .query
+)
     -> MLXArray
 {
+    recordTriAttentionCalibrationCapture(kind: kind, cache: cache, tensor: x)
     return rope(x, offset: cache?.offset ?? 0)
+}
+
+public func applyRotaryPosition<R: RoPELayer>(
+    _ rope: R,
+    to x: MLXArray,
+    offset: Int,
+    cache: KVCache?,
+    kind: RotaryPositionApplicationKind = .query
+) -> MLXArray {
+    recordTriAttentionCalibrationCapture(kind: kind, cache: cache, tensor: x)
+    return rope(x, offset: offset)
 }
