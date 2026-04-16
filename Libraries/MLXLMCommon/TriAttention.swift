@@ -462,15 +462,73 @@ public enum TriAttentionError: LocalizedError, Equatable {
     }
 }
 
+struct TriAttentionScoringState {
+    let kvHeads: Int
+    let repeats: Int
+    let nFreqs: Int
+    let qCenterMagGrouped: MLXArray
+    let qCenterPhaseGrouped: MLXArray
+    let normWeight: MLXArray
+    let offsetCos: MLXArray
+    let offsetSin: MLXArray
+    let omega: MLXArray
+}
+
+func makeTriAttentionScoringState(
+    layerCalibration: TriAttentionLayerCalibration,
+    calibration: TriAttentionCalibrationData,
+    rope: TriAttentionRoPEConfig,
+    offsets: MLXArray
+) throws -> TriAttentionScoringState {
+    try validateTriAttentionShapeCompatibility(
+        calibration: calibration,
+        layerCalibration: layerCalibration,
+        runtimeKVHeads: calibration.kvHeads,
+        runtimeHeadDim: rope.headDim,
+        rope: rope
+    )
+
+    let repeats = calibration.qHeads / calibration.kvHeads
+    let nFreqs = rope.rotatedDims / 2
+
+    let qCenterMag = sqrt(
+        layerCalibration.qCenterReal * layerCalibration.qCenterReal
+            + layerCalibration.qCenterImag * layerCalibration.qCenterImag
+            + MLXArray(1e-12)
+    )
+    let qCenterPhase = atan2(layerCalibration.qCenterImag, layerCalibration.qCenterReal)
+
+    let qCenterMagGrouped = qCenterMag.reshaped(calibration.kvHeads, repeats, nFreqs)
+    let qCenterPhaseGrouped = qCenterPhase.reshaped(calibration.kvHeads, repeats, nFreqs)
+    let qMeanNormGrouped = layerCalibration.qMeanNorm.reshaped(calibration.kvHeads, repeats, nFreqs)
+    let normWeight = qMeanNormGrouped - qCenterMagGrouped
+
+    let offsetOmega = expandedDimensions(offsets, axis: -1) * rope.omega[.newAxis, 0...]
+    let offsetCos = cos(offsetOmega)
+    let offsetSin = sin(offsetOmega)
+
+    return TriAttentionScoringState(
+        kvHeads: calibration.kvHeads,
+        repeats: repeats,
+        nFreqs: nFreqs,
+        qCenterMagGrouped: qCenterMagGrouped,
+        qCenterPhaseGrouped: qCenterPhaseGrouped,
+        normWeight: normWeight,
+        offsetCos: offsetCos,
+        offsetSin: offsetSin,
+        omega: rope.omega
+    )
+}
+
 public final class TriAttentionCache: BaseKVCache {
-    private static func defaultOffsets() -> MLXArray {
-        MLXArray((0 ..< 17).map { Float(pow(2.0, Double($0))) })
-    }
+    private static let compressionHysteresis = 128
+    nonisolated(unsafe) private static let defaultOffsets = MLXArray((0 ..< 17).map { Float(pow(2.0, Double($0))) })
 
     public var base: KVCache
     public let configuration: TriAttentionConfiguration
     public let layerIndex: Int
     private var tokensSinceCompress: Int
+    private var scoringState: TriAttentionScoringState?
 
     public init(base: KVCache, configuration: TriAttentionConfiguration, layerIndex: Int) {
         self.base = base
@@ -536,12 +594,18 @@ public final class TriAttentionCache: BaseKVCache {
             base: base.copy(), configuration: configuration, layerIndex: layerIndex)
         copy.offset = offset
         copy.tokensSinceCompress = tokensSinceCompress
+        copy.scoringState = scoringState
         return copy
     }
 
     private func compress(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray) {
         let tokenCount = keys.dim(2)
-        let keepCount = min(configuration.budget, tokenCount)
+        let hysteresis = configuration.budget > Self.compressionHysteresis
+            ? Self.compressionHysteresis : 0
+        let targetKeepCount = configuration.budget - hysteresis
+        let protectedKeepCount = min(
+            tokenCount, max(configuration.protectInitial, 0) + max(configuration.protectRecent, 0))
+        let keepCount = min(tokenCount, max(targetKeepCount, protectedKeepCount))
         guard keepCount < tokenCount,
             let layerCalibration = configuration.calibration.layerCalibration(layerIndex)
         else {
@@ -550,13 +614,24 @@ public final class TriAttentionCache: BaseKVCache {
 
         let rawScores: MLXArray
         do {
+            let scoringState: TriAttentionScoringState
+            if let cached = self.scoringState {
+                scoringState = cached
+            } else {
+                let prepared = try makeTriAttentionScoringState(
+                    layerCalibration: layerCalibration,
+                    calibration: configuration.calibration,
+                    rope: configuration.rope,
+                    offsets: Self.defaultOffsets
+                )
+                self.scoringState = prepared
+                scoringState = prepared
+            }
             rawScores = try scoreKeys(
                 cachedKeys: keys,
                 currentPosition: offset,
-                layerCalibration: layerCalibration,
-                calibration: configuration.calibration,
-                rope: configuration.rope,
-                offsets: Self.defaultOffsets()
+                prepared: scoringState,
+                rope: configuration.rope
             )
         } catch let error as TriAttentionError {
             fatalError(error.localizedDescription)
@@ -739,58 +814,63 @@ func scoreKeys(
     rope: TriAttentionRoPEConfig,
     offsets: MLXArray
 ) throws -> MLXArray {
-    let (_, kvHeads, _, _) = (
-        cachedKeys.dim(0), cachedKeys.dim(1), cachedKeys.dim(2), cachedKeys.dim(3)
-    )
-    let runtimeHeadDim = cachedKeys.dim(3)
-
-    try validateTriAttentionShapeCompatibility(
-        calibration: calibration,
+    let prepared = try makeTriAttentionScoringState(
         layerCalibration: layerCalibration,
-        runtimeKVHeads: kvHeads,
-        runtimeHeadDim: runtimeHeadDim,
-        rope: rope
+        calibration: calibration,
+        rope: rope,
+        offsets: offsets
     )
+    return try scoreKeys(cachedKeys: cachedKeys, currentPosition: currentPosition, prepared: prepared, rope: rope)
+}
+
+func scoreKeys(
+    cachedKeys: MLXArray,
+    currentPosition: Int,
+    prepared: TriAttentionScoringState,
+    rope: TriAttentionRoPEConfig
+) throws -> MLXArray {
+    let kvHeads = cachedKeys.dim(1)
+    let runtimeHeadDim = cachedKeys.dim(3)
+    guard kvHeads == prepared.kvHeads else {
+        throw TriAttentionError.incompatibleCalibration(
+            "TriAttention incompatible calibration: runtime KV heads \(kvHeads) do not match calibration KV heads \(prepared.kvHeads)."
+        )
+    }
+    guard runtimeHeadDim >= rope.rotatedDims else {
+        throw TriAttentionError.incompatibleCalibration(
+            "TriAttention incompatible calibration: runtime head dim \(runtimeHeadDim) must be at least rotated dims \(rope.rotatedDims)."
+        )
+    }
 
     let (kReal, kImag) = decomposeComplex(cachedKeys, rope: rope)
     let kMag = sqrt(kReal * kReal + kImag * kImag + MLXArray(1e-12))
     let kPhase = atan2(kImag, kReal)
 
-    let qCenterMag = sqrt(
-        layerCalibration.qCenterReal * layerCalibration.qCenterReal
-            + layerCalibration.qCenterImag * layerCalibration.qCenterImag
-            + MLXArray(1e-12)
-    )
-    let qCenterPhase = atan2(layerCalibration.qCenterImag, layerCalibration.qCenterReal)
-
-    let repeats = calibration.qHeads / calibration.kvHeads
-    let nFreqs = rope.rotatedDims / 2
-    let qCenterMagGrouped = qCenterMag.reshaped(kvHeads, repeats, nFreqs)
-    let qCenterPhaseGrouped = qCenterPhase.reshaped(kvHeads, repeats, nFreqs)
-    let qMeanNormGrouped = layerCalibration.qMeanNorm.reshaped(kvHeads, repeats, nFreqs)
-
-    let phi = qCenterPhaseGrouped[.newAxis, 0..., .newAxis, 0..., 0...] - kPhase[0..., 0..., 0..., .newAxis, 0...]
-    let amp = qCenterMagGrouped[.newAxis, 0..., .newAxis, 0..., 0...] * kMag[0..., 0..., 0..., .newAxis, 0...]
+    let phi = prepared.qCenterPhaseGrouped[.newAxis, 0..., .newAxis, 0..., 0...]
+        - kPhase[0..., 0..., 0..., .newAxis, 0...]
+    let amp = prepared.qCenterMagGrouped[.newAxis, 0..., .newAxis, 0..., 0...]
+        * kMag[0..., 0..., 0..., .newAxis, 0...]
 
     let a = amp * cos(phi)
     let b = amp * sin(phi)
 
-    let t = MLXArray(Float(currentPosition)) + offsets
-    let tOmega = expandedDimensions(t, axis: -1) * rope.omega[.newAxis, 0...]
-    let cosTw = cos(tOmega)
-    let sinTw = sin(tOmega)
+    let currentOmega = MLXArray(Float(currentPosition)) * prepared.omega
+    let currentCos = cos(currentOmega)[.newAxis, 0...]
+    let currentSin = sin(currentOmega)[.newAxis, 0...]
+    let cosTw = prepared.offsetCos * currentCos - prepared.offsetSin * currentSin
+    let sinTw = prepared.offsetSin * currentCos + prepared.offsetCos * currentSin
 
-    let flatShape = [cachedKeys.dim(0) * kvHeads * cachedKeys.dim(2) * repeats, nFreqs]
+    let flatShape = [cachedKeys.dim(0) * kvHeads * cachedKeys.dim(2) * prepared.repeats, prepared.nFreqs]
     let sTrigFlat = matmul(a.reshaped(flatShape), cosTw.T) - matmul(b.reshaped(flatShape), sinTw.T)
-    let sTrig = mean(sTrigFlat, axis: -1).reshaped(cachedKeys.dim(0), kvHeads, cachedKeys.dim(2), repeats)
+    let sTrig = mean(sTrigFlat, axis: -1).reshaped(cachedKeys.dim(0), kvHeads, cachedKeys.dim(2), prepared.repeats)
 
-    let normWeight = qMeanNormGrouped - qCenterMagGrouped
     let sNorm = sum(
-        normWeight[.newAxis, 0..., .newAxis, 0..., 0...] * kMag[0..., 0..., 0..., .newAxis, 0...],
+        prepared.normWeight[.newAxis, 0..., .newAxis, 0..., 0...]
+            * kMag[0..., 0..., 0..., .newAxis, 0...],
         axis: -1)
 
     let combined = sTrig + sNorm
-    if repeats > 1 {
+    if prepared.repeats > 1 {
         let meanScores = mean(combined, axis: 2, keepDims: true)
         let variance = mean(square(combined - meanScores), axis: 2, keepDims: true)
         let z = (combined - meanScores) / sqrt(variance + MLXArray(1e-8))
@@ -810,11 +890,15 @@ private func decomposeComplex(
         let rotatedHalf = rope.rotatedDims / 2
         let left = vectors[.ellipsis, ..<rotatedHalf]
         let right = vectors[.ellipsis, half ..< (half + rotatedHalf)]
-        let portion = concatenated([left, right], axis: -1)
         if rope.traditional {
-            return (portion[.ellipsis, ..<nFreqs], portion[.ellipsis, nFreqs ..< (2 * nFreqs)])
+            return (left, right)
         } else {
-            return (portion[.ellipsis, .stride(by: 2)], portion[.ellipsis, .stride(from: 1, by: 2)])
+            let real = concatenated(
+                [left[.ellipsis, .stride(by: 2)], right[.ellipsis, .stride(by: 2)]], axis: -1)
+            let imag = concatenated(
+                [left[.ellipsis, .stride(from: 1, by: 2)], right[.ellipsis, .stride(from: 1, by: 2)]],
+                axis: -1)
+            return (real, imag)
         }
     } else if rope.traditional {
         return (vectors[.ellipsis, ..<nFreqs], vectors[.ellipsis, nFreqs ..< (2 * nFreqs)])

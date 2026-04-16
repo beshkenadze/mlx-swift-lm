@@ -312,6 +312,67 @@ func testTriAttentionRejectsMalformedGroupedQueryCalibrationTensorShapes() async
 }
 
 @Test
+func testTriAttentionPreparedScoringMatchesDirectScoring() async throws {
+    let configuration = makeGroupedQueryTriAttentionConfiguration(
+        qHeads: 16,
+        kvHeads: 8,
+        nFreqs: 32,
+        headDim: 64,
+        budget: 4
+    )
+    let layerCalibration = try #require(configuration.calibration.layerCalibration(0))
+    let offsets = MLXArray([Float32(1), Float32(2), Float32(4), Float32(8)])
+    let prepared = try makeTriAttentionScoringState(
+        layerCalibration: layerCalibration,
+        calibration: configuration.calibration,
+        rope: configuration.rope,
+        offsets: offsets
+    )
+    let keys = MLXArray.ones([1, 8, 64, 64], dtype: .float32)
+    let direct = try scoreKeys(
+        cachedKeys: keys,
+        currentPosition: 64,
+        layerCalibration: layerCalibration,
+        calibration: configuration.calibration,
+        rope: configuration.rope,
+        offsets: offsets
+    )
+    let preparedScores = try scoreKeys(
+        cachedKeys: keys,
+        currentPosition: 64,
+        prepared: prepared,
+        rope: configuration.rope
+    )
+
+    #expect(allClose(preparedScores, direct, rtol: 1e-5, atol: 1e-5).item(Bool.self))
+}
+
+@Test
+func testTriAttentionDecomposeComplexMatchesProportionalNonTraditionalLayout() async throws {
+    let rope = TriAttentionRoPEConfig(
+        headDim: 64,
+        rotatedDims: 32,
+        traditional: false,
+        omega: MLXArray.ones([16], dtype: .float32),
+        proportional: true
+    )
+    let vectors = MLXArray(Array(0..<64).map(Float32.init)).reshaped(1, 1, 1, 64)
+
+    let (real, imag) = decomposeComplex(vectors, rope: rope)
+
+    let left = vectors[.ellipsis, ..<16]
+    let right = vectors[.ellipsis, 32..<48]
+    let expectedReal = concatenated(
+        [left[.ellipsis, .stride(by: 2)], right[.ellipsis, .stride(by: 2)]], axis: -1)
+    let expectedImag = concatenated(
+        [left[.ellipsis, .stride(from: 1, by: 2)], right[.ellipsis, .stride(from: 1, by: 2)]],
+        axis: -1)
+
+    #expect(allClose(real, expectedReal, rtol: 1e-6, atol: 1e-6).item(Bool.self))
+    #expect(allClose(imag, expectedImag, rtol: 1e-6, atol: 1e-6).item(Bool.self))
+}
+
+@Test
 func testTriAttentionRejectsMismatchedCalibrationTensorShapes() async {
     let rope = TriAttentionRoPEConfig(
         headDim: 128,
