@@ -118,6 +118,378 @@ public protocol QuantizedKVCacheProtocol: KVCache {
     func getQuantizedState() -> ((MLXArray, MLXArray, MLXArray?), (MLXArray, MLXArray, MLXArray?))?
 }
 
+/// Protocol for caches that store TurboQuant-style packed KV state but materialize
+/// full-precision tensors when the attention path requests them.
+///
+/// This is the minimal abstraction layer before fused kernels exist: models remain
+/// unchanged and attention can fall back to standard SDPA on the returned K/V.
+public protocol TurboQuantKVCacheProtocol: KVCache {
+    var turboQuantBits: Int { get }
+    var turboQuantSeed: Int { get }
+
+    /// Update packed KV state and return materialized keys/values for attention.
+    func updateTurboQuant(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray)
+
+    /// Optional access to the current materialized state without updating.
+    func getTurboQuantState() -> (MLXArray, MLXArray)?
+
+    /// Update packed KV state and return packed representations directly.
+    func updateTurboQuantPacked(keys: MLXArray, values: MLXArray) -> (
+        TurboQuantPackedTensorState, TurboQuantPackedTensorState
+    )
+
+    /// Optional access to the current packed state without materialization.
+    func getTurboQuantPackedState() -> (TurboQuantPackedTensorState, TurboQuantPackedTensorState)?
+}
+
+public struct TurboQuantPackedTensorState {
+    public let indices: MLXArray
+    public let norms: MLXArray
+    public let headDim: Int
+
+    public init(indices: MLXArray, norms: MLXArray, headDim: Int) {
+        self.indices = indices
+        self.norms = norms
+        self.headDim = headDim
+    }
+}
+
+public struct TurboQuantConfiguration: Sendable {
+    public let bits: Int
+    public let seed: Int
+
+    public init(bits: Int = 3, seed: Int = 0) {
+        self.bits = bits
+        self.seed = seed
+    }
+}
+
+public enum TurboQuantError: LocalizedError, Equatable {
+    case incompatibleWithQuantizedKV
+    case incompatibleWithTriAttention
+
+    public var errorDescription: String? {
+        switch self {
+        case .incompatibleWithQuantizedKV:
+            return "TurboQuant and KV cache quantization cannot be enabled together."
+        case .incompatibleWithTriAttention:
+            return "TurboQuant and TriAttention cannot be enabled together in the current implementation."
+        }
+    }
+}
+
+/// Minimal first-slice TurboQuant cache.
+///
+/// This preserves the cache abstraction and shared attention routing before the
+/// packed-bit representation and fused kernels are implemented. Internally it
+/// stores materialized K/V via `KVCacheSimple`, so behavior matches the regular
+/// path while callers can already depend on `TurboQuantKVCacheProtocol`.
+public final class TurboQuantKVCache: BaseKVCache, TurboQuantKVCacheProtocol {
+    public let bits: Int
+    public let seed: Int
+    public var turboQuantBits: Int { bits }
+    public var turboQuantSeed: Int { seed }
+    private var keyHeadDim: Int = 0
+    private var valueHeadDim: Int = 0
+    private var keyIndices: MLXArray?
+    private var keyNorms: MLXArray?
+    private var valueIndices: MLXArray?
+    private var valueNorms: MLXArray?
+    private var signCache: [Int: MLXArray] = [:]
+
+    public init(base: KVCacheSimple = KVCacheSimple(), bits: Int = 3, seed: Int = 0) {
+        self.bits = bits
+        self.seed = seed
+        super.init()
+        let state = base.state
+        if state.count == 2 {
+            _ = updateTurboQuant(keys: state[0], values: state[1])
+        }
+    }
+
+    public override func update(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray) {
+        updateTurboQuant(keys: keys, values: values)
+    }
+
+    public func updateTurboQuant(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray) {
+        _ = updateTurboQuantPacked(keys: keys, values: values)
+
+        guard let state = getTurboQuantState() else {
+            fatalError("TurboQuant state should be materializable after update")
+        }
+        return state
+    }
+
+    public func updateTurboQuantPacked(keys: MLXArray, values: MLXArray) -> (
+        TurboQuantPackedTensorState, TurboQuantPackedTensorState
+    ) {
+        let (newKeyIndices, newKeyNorms) = quantizeTurboQuant(keys)
+        let (newValueIndices, newValueNorms) = quantizeTurboQuant(values)
+        keyHeadDim = keys.dim(3)
+        valueHeadDim = values.dim(3)
+
+        keyIndices = appendTurboQuantState(existing: keyIndices, newValue: newKeyIndices)
+        keyNorms = appendTurboQuantState(existing: keyNorms, newValue: newKeyNorms)
+        valueIndices = appendTurboQuantState(existing: valueIndices, newValue: newValueIndices)
+        valueNorms = appendTurboQuantState(existing: valueNorms, newValue: newValueNorms)
+        offset += keys.dim(2)
+
+        guard let packedState = getTurboQuantPackedState() else {
+            fatalError("TurboQuant packed state should exist after update")
+        }
+        return packedState
+    }
+
+    public func getTurboQuantState() -> (MLXArray, MLXArray)? {
+        guard let keyIndices, let keyNorms, let valueIndices, let valueNorms else { return nil }
+        return (
+            dequantizeTurboQuant(indices: keyIndices, norms: keyNorms),
+            dequantizeTurboQuant(indices: valueIndices, norms: valueNorms)
+        )
+    }
+
+    public func getTurboQuantPackedState() -> (
+        TurboQuantPackedTensorState, TurboQuantPackedTensorState
+    )? {
+        guard let keyIndices, let keyNorms, let valueIndices, let valueNorms else { return nil }
+        return (
+            TurboQuantPackedTensorState(indices: keyIndices, norms: keyNorms, headDim: keyHeadDim),
+            TurboQuantPackedTensorState(
+                indices: valueIndices, norms: valueNorms, headDim: valueHeadDim)
+        )
+    }
+
+    public override var state: [MLXArray] {
+        get {
+            [keyIndices, keyNorms, valueIndices, valueNorms].compactMap { $0 }
+        }
+        set {
+            switch newValue.count {
+            case 0:
+                keyIndices = nil
+                keyNorms = nil
+                valueIndices = nil
+                valueNorms = nil
+                keyHeadDim = 0
+                valueHeadDim = 0
+                offset = 0
+            case 4:
+                keyIndices = newValue[0]
+                keyNorms = newValue[1]
+                valueIndices = newValue[2]
+                valueNorms = newValue[3]
+                offset = newValue[1].dim(2)
+            default:
+                fatalError("TurboQuantKVCache state must have exactly 4 arrays")
+            }
+        }
+    }
+
+    public override var metaState: [String] {
+        get { [String(offset), String(bits), String(seed), String(keyHeadDim), String(valueHeadDim)] }
+        set {
+            guard newValue.count == 5 else {
+                fatalError("TurboQuantKVCache metaState must have exactly 5 values")
+            }
+            offset = Int(newValue[0]) ?? 0
+            keyHeadDim = Int(newValue[3]) ?? 0
+            valueHeadDim = Int(newValue[4]) ?? 0
+        }
+    }
+
+    public override var isTrimmable: Bool { true }
+
+    @discardableResult
+    public override func trim(_ n: Int) -> Int {
+        let trimmed = min(offset, n)
+        let kept = max(offset - trimmed, 0)
+        if let keyIndices { self.keyIndices = keyIndices[.ellipsis, ..<kept, 0...] }
+        if let keyNorms { self.keyNorms = keyNorms[.ellipsis, ..<kept, 0...] }
+        if let valueIndices { self.valueIndices = valueIndices[.ellipsis, ..<kept, 0...] }
+        if let valueNorms { self.valueNorms = valueNorms[.ellipsis, ..<kept, 0...] }
+        offset = kept
+        return trimmed
+    }
+
+    public override func makeMask(
+        n: Int,
+        windowSize: Int?,
+        returnArray: Bool
+    ) -> MLXFast.ScaledDotProductAttentionMaskMode {
+        super.makeMask(n: n, windowSize: windowSize, returnArray: returnArray)
+    }
+
+    public override func copy() -> any KVCache {
+        let copy = TurboQuantKVCache(bits: bits, seed: seed)
+        let currentState = state
+        if !currentState.isEmpty {
+            copy.state = currentState.map { $0[.ellipsis] }
+        }
+        copy.metaState = metaState
+        return copy
+    }
+
+    private func quantizeTurboQuant(_ array: MLXArray) -> (MLXArray, MLXArray) {
+        let dim = array.dim(3)
+        let norms = sqrt(sum(array * array, axis: -1, keepDims: true) + MLXArray(1e-12))
+        let normalized = array / norms
+        let rotated = hadamardTransform(normalized * signVector(dim: dim))
+        let codebook = turboQuantCentroids(bits: bits, dim: dim)
+        let distances = abs(expandedDimensions(rotated, axis: -1) - codebook)
+        let indices = argMin(distances, axis: -1).asType(.uint8)
+        return (packThreeBitIndices(indices), norms.asType(.float32))
+    }
+
+    private func dequantizeTurboQuant(indices: MLXArray, norms: MLXArray) -> MLXArray {
+        let dim = norms === keyNorms ? keyHeadDim : valueHeadDim
+        precondition(dim > 0, "TurboQuant head dimension metadata is missing")
+        let codebook = turboQuantCentroids(bits: bits, dim: dim)
+        let unpacked = unpackThreeBitIndices(indices, headDim: dim)
+        let rotated = take(codebook, unpacked.asType(.int32))
+        let restored = hadamardTransform(rotated) * signVector(dim: dim)
+        let restoredNorm = sqrt(sum(restored * restored, axis: -1, keepDims: true) + MLXArray(1e-12))
+        let unit = restored / restoredNorm
+        return unit * norms.asType(unit.dtype)
+    }
+
+    private func signVector(dim: Int) -> MLXArray {
+        if let cached = signCache[dim] {
+            return cached
+        }
+        let defaultSeed: UInt64 = 0x1234_5678_9ABC_DEF0
+        var state: UInt64 = seed == 0 ? defaultSeed : UInt64(bitPattern: Int64(seed))
+        let values: [Float32] = (0..<dim).map { _ in
+            state = state &* 6364136223846793005 &+ 1
+            return (state & 1) == 0 ? -1 : 1
+        }
+        let sign = MLXArray(values).reshaped(1, 1, 1, dim)
+        signCache[dim] = sign
+        return sign
+    }
+}
+
+public extension KVCacheSimple {
+    func toTurboQuant(bits: Int = 3, seed: Int = 0) -> TurboQuantKVCache {
+        TurboQuantKVCache(base: self.copy() as! KVCacheSimple, bits: bits, seed: seed)
+    }
+}
+
+private func appendTurboQuantState(existing: MLXArray?, newValue: MLXArray) -> MLXArray {
+    guard let existing else { return newValue }
+    return concatenated([existing, newValue], axis: 2)
+}
+
+private func turboQuantCentroids(bits: Int, dim: Int) -> MLXArray {
+    precondition(bits == 3, "TurboQuant first slice currently supports 3-bit centroids only")
+    let base = MLXArray([Float32(-2.1519), -1.3439, -0.7560, -0.2451, 0.2451, 0.7560, 1.3439, 2.1519])
+    return base / sqrt(Float(dim))
+}
+
+private func packThreeBitIndices(_ indices: MLXArray) -> MLXArray {
+    let shape = indices.shape
+    precondition(shape.count == 4, "TurboQuant indices must be [B, H, S, D]")
+    let headDim = shape[3]
+    let packedBytes = (headDim * 3 + 7) / 8
+    let flat = indices.asArray(UInt8.self)
+    let vectorCount = shape[0] * shape[1] * shape[2]
+    var packed = [UInt8](repeating: 0, count: vectorCount * packedBytes)
+
+    for vector in 0..<vectorCount {
+        var bitOffset = 0
+        let sourceBase = vector * headDim
+        let destBase = vector * packedBytes
+        for i in 0..<headDim {
+            let value = flat[sourceBase + i] & 0x7
+            let byteIndex = destBase + bitOffset / 8
+            let bitIndex = bitOffset % 8
+            packed[byteIndex] |= value << UInt8(bitIndex)
+            if bitIndex > 5 {
+                packed[byteIndex + 1] |= value >> UInt8(8 - bitIndex)
+            }
+            bitOffset += 3
+        }
+    }
+
+    return MLXArray(packed).reshaped(shape[0], shape[1], shape[2], packedBytes)
+}
+
+private func unpackThreeBitIndices(_ packed: MLXArray, headDim: Int) -> MLXArray {
+    let shape = packed.shape
+    precondition(shape.count == 4, "TurboQuant packed indices must be [B, H, S, Bytes]")
+    let packedBytes = shape[3]
+    let flat = packed.asArray(UInt8.self)
+    let vectorCount = shape[0] * shape[1] * shape[2]
+    var unpacked = [UInt8](repeating: 0, count: vectorCount * headDim)
+
+    for vector in 0..<vectorCount {
+        var bitOffset = 0
+        let sourceBase = vector * packedBytes
+        let destBase = vector * headDim
+        for i in 0..<headDim {
+            let byteIndex = sourceBase + bitOffset / 8
+            let bitIndex = bitOffset % 8
+            var value = (flat[byteIndex] >> UInt8(bitIndex)) & 0x7
+            if bitIndex > 5 {
+                let spill = flat[byteIndex + 1] << UInt8(8 - bitIndex)
+                value = (value | spill) & 0x7
+            }
+            unpacked[destBase + i] = value
+            bitOffset += 3
+        }
+    }
+
+    return MLXArray(unpacked).reshaped(shape[0], shape[1], shape[2], headDim)
+}
+
+func materializeTurboQuant(_ packed: TurboQuantPackedTensorState, bits: Int, seed: Int) -> MLXArray {
+    let codebook = turboQuantCentroids(bits: bits, dim: packed.headDim)
+    let unpacked = unpackThreeBitIndices(packed.indices, headDim: packed.headDim)
+    let rotated = take(codebook, unpacked.asType(.int32))
+    let restored = hadamardTransform(rotated) * turboQuantSignVector(dim: packed.headDim, seed: seed)
+    let restoredNorm = sqrt(sum(restored * restored, axis: -1, keepDims: true) + MLXArray(1e-12))
+    let unit = restored / restoredNorm
+    return unit * packed.norms.asType(unit.dtype)
+}
+
+func materializeTurboQuantHead(
+    _ packed: TurboQuantPackedTensorState,
+    headIndex: Int,
+    bits: Int,
+    seed: Int
+) -> MLXArray {
+    let headPacked = TurboQuantPackedTensorState(
+        indices: packed.indices[0..., headIndex ..< (headIndex + 1), 0..., 0...],
+        norms: packed.norms[0..., headIndex ..< (headIndex + 1), 0..., 0...],
+        headDim: packed.headDim
+    )
+    return materializeTurboQuant(headPacked, bits: bits, seed: seed)
+}
+
+func materializeTurboQuantHeadRange(
+    _ packed: TurboQuantPackedTensorState,
+    headIndex: Int,
+    sequenceRange: Range<Int>,
+    bits: Int,
+    seed: Int
+) -> MLXArray {
+    let headPacked = TurboQuantPackedTensorState(
+        indices: packed.indices[0..., headIndex ..< (headIndex + 1), sequenceRange, 0...],
+        norms: packed.norms[0..., headIndex ..< (headIndex + 1), sequenceRange, 0...],
+        headDim: packed.headDim
+    )
+    return materializeTurboQuant(headPacked, bits: bits, seed: seed)
+}
+
+private func turboQuantSignVector(dim: Int, seed: Int) -> MLXArray {
+    let defaultSeed: UInt64 = 0x1234_5678_9ABC_DEF0
+    var state: UInt64 = seed == 0 ? defaultSeed : UInt64(bitPattern: Int64(seed))
+    let values: [Float32] = (0..<dim).map { _ in
+        state = state &* 6364136223846793005 &+ 1
+        return (state & 1) == 0 ? -1 : 1
+    }
+    return MLXArray(values).reshaped(1, 1, 1, dim)
+}
+
 /// Base cache implementation providing default behaviors
 open class BaseKVCache: KVCache {
     public var offset: Int = 0
@@ -1171,6 +1543,7 @@ public class MambaCache: ArraysCache {
 /// Composite cache that manages multiple sub-caches
 public class CacheList: BaseKVCache {
     private var caches: [KVCache]
+    private var restoredStateCounts: [Int]?
 
     public init(_ caches: KVCache...) {
         self.caches = caches
@@ -1190,6 +1563,11 @@ public class CacheList: BaseKVCache {
         return caches[index]
     }
 
+    public var elements: [KVCache] {
+        get { caches }
+        set { caches = newValue }
+    }
+
     public override func update(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray) {
         fatalError("CacheList should not use update(keys:values:) - use subscript access instead")
     }
@@ -1197,13 +1575,58 @@ public class CacheList: BaseKVCache {
     public override var state: [MLXArray] {
         get { caches.flatMap { $0.state } }
         set {
-            let stateLengths = caches.map { $0.state.count }
+            let stateLengths = restoredStateCounts ?? caches.map { $0.state.count }
             var start = 0
             for i in 0 ..< caches.count {
                 let length = stateLengths[i]
                 caches[i].state = Array(newValue[start ..< (start + length)])
                 start += length
             }
+            restoredStateCounts = nil
+        }
+    }
+
+    public override var metaState: [String] {
+        get {
+            var result = [String(caches.count)]
+            for cache in caches {
+                let meta = cache.metaState
+                result.append(cacheClassName(cache))
+                result.append(String(cache.state.count))
+                result.append(String(meta.count))
+                result.append(contentsOf: meta)
+            }
+            return result
+        }
+        set {
+            guard !newValue.isEmpty, let count = Int(newValue[0]) else {
+                fatalError("CacheList metaState must start with child count")
+            }
+            var index = 1
+            var newCaches = [KVCache]()
+            var stateCounts = [Int]()
+            for _ in 0..<count {
+                guard index + 2 < newValue.count,
+                    let stateCount = Int(newValue[index + 1]),
+                    let metaCount = Int(newValue[index + 2])
+                else {
+                    fatalError("CacheList metaState is truncated")
+                }
+                let className = newValue[index]
+                let metaStart = index + 3
+                let metaEnd = metaStart + metaCount
+                guard metaEnd <= newValue.count else {
+                    fatalError("CacheList child metaState is truncated")
+                }
+                let meta = Array(newValue[metaStart..<metaEnd])
+                var cache = instantiateCacheForCacheList(className: className, info: meta)
+                cache.metaState = meta
+                newCaches.append(cache)
+                stateCounts.append(stateCount)
+                index = metaEnd
+            }
+            caches = newCaches
+            restoredStateCounts = stateCounts
         }
     }
 
@@ -1235,6 +1658,78 @@ struct KVCacheError: Error {
 
 // MARK: - Utility Functions
 
+private func cacheClassName(_ cache: KVCache) -> String {
+    switch cache {
+    case is ChunkedKVCache:
+        return "ChunkedKVCache"
+    case is KVCacheSimple:
+        return "KVCache"
+    case is RotatingKVCache:
+        return "RotatingKVCache"
+    case is QuantizedKVCache:
+        return "QuantizedKVCache"
+    case is TurboQuantKVCache:
+        return "TurboQuantKVCache"
+    case is MambaCache:
+        return "MambaCache"
+    case is ArraysCache:
+        return "ArraysCache"
+    case is CacheList:
+        return "CacheList"
+    default:
+        return "KVCache"
+    }
+}
+
+private func instantiateCache(className: String, info: [String]) throws -> KVCache {
+    switch className {
+    case "KVCache", "KVCacheSimple":
+        return KVCacheSimple()
+    case "RotatingKVCache":
+        guard info.count >= 5 else {
+            throw KVCacheError(message: "Invalid RotatingKVCache metaState - expected 5 values")
+        }
+        if info[1] == "None" {
+            throw KVCacheError(
+                message:
+                    "RotatingKVCache with maxSize=None is not supported. This cache was created with invalid parameters."
+            )
+        }
+        guard let maxSize = Int(info[1]) else {
+            throw KVCacheError(message: "Failed to parse RotatingKVCache maxSize from: \(info[1])")
+        }
+        return RotatingKVCache(maxSize: maxSize)
+    case "QuantizedKVCache":
+        return QuantizedKVCache()
+    case "TurboQuantKVCache":
+        guard info.count >= 5 else {
+            throw KVCacheError(message: "Invalid TurboQuantKVCache metaState - expected 5 values")
+        }
+        guard let bits = Int(info[1]), let seed = Int(info[2]) else {
+            throw KVCacheError(message: "Failed to parse TurboQuantKVCache bits/seed from: \(info)")
+        }
+        return TurboQuantKVCache(bits: bits, seed: seed)
+    case "ChunkedKVCache":
+        return ChunkedKVCache()
+    case "MambaCache":
+        return MambaCache()
+    case "ArraysCache":
+        return ArraysCache(size: 0)
+    case "CacheList":
+        return CacheList()
+    default:
+        throw KVCacheError(message: "Unknown cache class: \(className)")
+    }
+}
+
+private func instantiateCacheForCacheList(className: String, info: [String]) -> KVCache {
+    do {
+        return try instantiateCache(className: className, info: info)
+    } catch {
+        fatalError("Failed to reconstruct CacheList child \(className): \(error)")
+    }
+}
+
 /// Save a pre-computed prompt cache to a file.
 ///
 /// - Parameters:
@@ -1246,29 +1741,13 @@ public func savePromptCache(
     cache: [KVCache],
     metadata: [String: String] = [:]
 ) throws {
+    if cache.contains(where: { $0 is TriAttentionCache }) {
+        throw TriAttentionError.cacheSerializationUnsupported
+    }
     let cacheData = cache.map { $0.state }
     let cacheInfo = cache.map { $0.metaState }
     // Use Python-compatible class names for cross-platform compatibility
-    let cacheClasses = cache.map { cache -> String in
-        switch cache {
-        case is ChunkedKVCache:
-            return "ChunkedKVCache"  // Must precede KVCacheSimple because of inheritance
-        case is KVCacheSimple:
-            return "KVCache"  // Python uses "KVCache" for the basic cache
-        case is RotatingKVCache:
-            return "RotatingKVCache"
-        case is QuantizedKVCache:
-            return "QuantizedKVCache"
-        case is MambaCache:
-            return "MambaCache"  // Must precede ArraysCache because of inheritance
-        case is ArraysCache:
-            return "ArraysCache"
-        case is CacheList:
-            return "CacheList"
-        default:
-            return "KVCache"  // Default fallback
-        }
-    }
+    let cacheClasses = cache.map(cacheClassName)
 
     // Flatten cache data using tree_flatten compatible structure: "i.j" format
     var flattenedData: [String: MLXArray] = [:]
@@ -1337,49 +1816,19 @@ public func loadPromptCache(
         let className = cacheClasses[i]
 
         var cache: KVCache
-        switch className {
-        case "KVCache", "KVCacheSimple":  // Handle both Python and Swift names
-            cache = KVCacheSimple()
-        case "RotatingKVCache":
-            // Parse metaState first to get maxSize, then create cache
-            let info = i < cacheInfo.count ? cacheInfo[i] : []
-            guard info.count >= 5 else {
-                throw KVCacheError(message: "Invalid RotatingKVCache metaState - expected 5 values")
-            }
-            if info[1] == "None" {
-                throw KVCacheError(
-                    message:
-                        "RotatingKVCache with maxSize=None is not supported. This cache was created with invalid parameters."
-                )
-            }
-            guard let maxSize = Int(info[1]) else {
-                throw KVCacheError(
-                    message: "Failed to parse RotatingKVCache maxSize from: \(info[1])")
-            }
-            cache = RotatingKVCache(maxSize: maxSize)  // Create with parsed maxSize
-        case "QuantizedKVCache":
-            cache = QuantizedKVCache()
-        case "ChunkedKVCache":
-            cache = ChunkedKVCache()
-        case "MambaCache":
-            cache = MambaCache()
-        case "ArraysCache":
-            // Size doesn't matter here as it's only needed to initialize the `cache` container inside
-            // The container will be set as a `state` with correct size before returning a cache
-            cache = ArraysCache(size: 0)
-        case "CacheList":
-            // Note: CacheList requires special handling as it contains sub-caches
-            // For now, create an empty CacheList - this may not work correctly
-            // for complex cache hierarchies loaded from Python
-            cache = CacheList()
-            print("Warning: CacheList loading may not preserve sub-cache structure correctly")
-        default:
-            throw KVCacheError(message: "Unknown cache class: \(className)")
-        }
+        let info = i < cacheInfo.count ? cacheInfo[i] : []
+        cache = try instantiateCache(className: className, info: info)
 
-        cache.state = cacheData[i]
-        if i < cacheInfo.count {
-            cache.metaState = cacheInfo[i]
+        if className == "CacheList" {
+            if i < cacheInfo.count {
+                cache.metaState = cacheInfo[i]
+            }
+            cache.state = cacheData[i]
+        } else {
+            cache.state = cacheData[i]
+            if i < cacheInfo.count {
+                cache.metaState = cacheInfo[i]
+            }
         }
         caches.append(cache)
     }
@@ -1643,6 +2092,7 @@ public func maybeQuantizeKVCache(
     guard let kvBits = kvBits,
         !cache.isEmpty,
         !(cache[0] is QuantizedKVCache),
+        !(cache[0] is TurboQuantKVCacheProtocol),
         cache[0].offset > quantizedKVStart
     else {
         return
