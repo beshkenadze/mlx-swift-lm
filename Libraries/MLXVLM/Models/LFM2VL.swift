@@ -1088,13 +1088,13 @@ public class LFM2VL: Module, VLMModel, KVCacheDimensionProvider {
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         let textConfig = config.textConfiguration
-        return (0 ..< textConfig.hiddenLayers).map { layerIdx in
+        return wrapTriAttentionCaches((0 ..< textConfig.hiddenLayers).map { layerIdx in
             if textConfig.fullAttnIdxs.contains(layerIdx) {
                 KVCacheSimple()
             } else {
                 MambaCache()
             }
-        }
+        }, parameters: parameters)
     }
 }
 

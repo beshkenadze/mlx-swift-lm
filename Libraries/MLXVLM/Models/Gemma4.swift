@@ -169,6 +169,12 @@ private func gemma4EnsureFusedSDPA(
 
 private enum Gemma4SharedKVState {
     case regular(keys: MLXArray, values: MLXArray)
+    case turboQuant(
+        keys: TurboQuantPackedTensorState,
+        values: TurboQuantPackedTensorState,
+        bits: Int,
+        seed: Int
+    )
     case quantized(
         keys: (MLXArray, MLXArray, MLXArray?),
         values: (MLXArray, MLXArray, MLXArray?),
@@ -181,6 +187,8 @@ private enum Gemma4SharedKVState {
         switch self {
         case .regular(let keys, _):
             return keys.dim(2)
+        case .turboQuant(_, let values, _, _):
+            return values.norms.dim(2)
         case .quantized(let keys, _, _, _, _):
             return keys.0.dim(-2)
         }
@@ -684,7 +692,15 @@ private final class Gemma4TextAttention: Module {
             keys = kNorm(keys).transposed(0, 2, 1, 3)
             values = vNorm(values).transposed(0, 2, 1, 3)
             keys = rope(keys, offset: currentOffset)
-            if let quantizedCache = cache as? QuantizedKVCacheProtocol {
+            if let turboCache = cache as? TurboQuantKVCacheProtocol {
+                let (packedKeys, packedValues) = turboCache.updateTurboQuantPacked(keys: keys, values: values)
+                kvState = .turboQuant(
+                    keys: packedKeys,
+                    values: packedValues,
+                    bits: turboCache.turboQuantBits,
+                    seed: turboCache.turboQuantSeed
+                )
+            } else if let quantizedCache = cache as? QuantizedKVCacheProtocol {
                 let (quantizedKeys, quantizedValues) = quantizedCache.updateQuantized(
                     keys: keys, values: values)
                 kvState = .quantized(
@@ -719,6 +735,16 @@ private final class Gemma4TextAttention: Module {
                     values: values,
                     scale: scale,
                     mask: localMask
+                )
+            case .turboQuant(let keys, let values, let bits, let seed):
+                turboQuantScaledDotProductAttention(
+                    queries: queries,
+                    packedKeys: keys,
+                    packedValues: values,
+                    scale: scale,
+                    mask: localMask,
+                    bits: bits,
+                    seed: seed
                 )
             case .quantized(let keys, let values, let groupSize, let bits, let mode):
                 quantizedScaledDotProductAttention(
@@ -1666,7 +1692,7 @@ public final class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [any KVCache] {
-        languageModel.newCache(parameters: parameters)
+        wrapTriAttentionCaches(languageModel.newCache(parameters: parameters), parameters: parameters)
     }
 
     private func getInputEmbeddings(

@@ -1039,7 +1039,9 @@ public class Qwen35: Module, VLMModel {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        languageModel.makeCache(maxKVSize: parameters?.maxKVSize)
+        wrapTriAttentionCaches(
+            languageModel.makeCache(maxKVSize: parameters?.maxKVSize),
+            parameters: parameters)
     }
 
     private func mergeInputIdsWithImageFeatures(

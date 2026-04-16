@@ -891,7 +891,7 @@ public class Gemma3: Module, VLMModel, KVCacheDimensionProvider {
 
     /// Create cache with proper types for each layer
     public func newCache(parameters: GenerateParameters?) -> [any KVCache] {
-        return languageModel.newCache(parameters: parameters)
+        return wrapTriAttentionCaches(languageModel.newCache(parameters: parameters), parameters: parameters)
     }
 
     public init(_ config: Gemma3Configuration) {

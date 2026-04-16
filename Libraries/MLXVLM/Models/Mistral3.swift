@@ -808,7 +808,7 @@ public class Mistral3VLM: Module, VLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        languageModel.newCache(parameters: parameters)
+        wrapTriAttentionCaches(languageModel.newCache(parameters: parameters), parameters: parameters)
     }
 }
 
