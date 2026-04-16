@@ -154,8 +154,8 @@ class LFM2MoEAttention: Module {
         keys = kLayerNorm(keys.reshaped(B, L, args.kvHeads, -1)).transposed(0, 2, 1, 3)
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
-        queries = applyRotaryPosition(rope, to: queries, cache: cache)
-        keys = applyRotaryPosition(rope, to: keys, cache: cache)
+        queries = applyRotaryPosition(rope, to: queries, cache: cache, kind: .query)
+        keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
 
         let output = attentionWithCacheUpdate(
             queries: queries,
@@ -481,13 +481,13 @@ public class LFM2MoEModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        (0 ..< configuration.hiddenLayers).map { layerIdx in
+        wrapTriAttentionCaches((0 ..< configuration.hiddenLayers).map { layerIdx in
             if configuration.fullAttnIdxs.contains(layerIdx) {
                 KVCacheSimple()
             } else {
                 MambaCache()
             }
-        }
+        }, parameters: parameters)
     }
 }
 

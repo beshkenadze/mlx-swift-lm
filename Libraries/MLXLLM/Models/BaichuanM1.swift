@@ -130,8 +130,8 @@ class BaichuanM1Attention: Module {
         keys = customConvolution(keys, convK, state: lastK)
         values = customConvolution(values, convV, state: lastV)
 
-        queries = applyRotaryPosition(rope, to: queries, cache: kvSubCache)
-        keys = applyRotaryPosition(rope, to: keys, cache: kvSubCache)
+        queries = applyRotaryPosition(rope, to: queries, cache: kvSubCache, kind: .query)
+        keys = applyRotaryPosition(rope, to: keys, cache: kvSubCache, kind: .key)
 
         if let cache = cache as? CacheList {
             let kvCache = cache[1]
@@ -262,13 +262,13 @@ public class BaichuanM1Model: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.enumerated().map { (i, _) in
+        return wrapTriAttentionCaches(model.layers.enumerated().map { (i, _) in
             let isSWA = configuration.slidingWindowLayers.contains(i)
             let convCache = MambaCache()
             let kvCache: KVCache =
                 isSWA ? RotatingKVCache(maxSize: configuration.slidingWindow) : KVCacheSimple()
             return CacheList(convCache, kvCache)
-        }
+        }, parameters: parameters)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

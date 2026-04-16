@@ -197,8 +197,8 @@ class AfMoEAttention: Module {
 
         // Apply RoPE only for local (sliding window) attention
         if isLocalAttention, let rope = rope {
-            queries = applyRotaryPosition(rope, to: queries, cache: cache)
-            keys = applyRotaryPosition(rope, to: keys, cache: cache)
+            queries = applyRotaryPosition(rope, to: queries, cache: cache, kind: .query)
+            keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
         }
 
         var output = attentionWithCacheUpdate(
@@ -558,13 +558,13 @@ public class AfMoEModel: Module, LLMModel, KVCacheDimensionProvider {
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         // Create cache based on layer type (rotating for sliding attention, simple for full attention)
-        layerUsesSliding.map { usesSliding in
+        wrapTriAttentionCaches(layerUsesSliding.map { usesSliding in
             if usesSliding {
                 RotatingKVCache(maxSize: slidingWindow)
             } else {
                 KVCacheSimple()
             }
-        }
+        }, parameters: parameters)
     }
 }
 

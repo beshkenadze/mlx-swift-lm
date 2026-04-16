@@ -245,8 +245,8 @@ class GraniteMoeHybridAttention: Module {
         values = values.reshaped(B, L, args.kvHeads, headDim).transposed(0, 2, 1, 3)
 
         if let rope {
-            queries = applyRotaryPosition(rope, to: queries, cache: cache)
-            keys = applyRotaryPosition(rope, to: keys, cache: cache)
+            queries = applyRotaryPosition(rope, to: queries, cache: cache, kind: .query)
+            keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
         }
 
         let output = attentionWithCacheUpdate(
@@ -516,13 +516,13 @@ public class GraniteMoeHybridModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        configuration.layerTypes.map { layerType in
+        wrapTriAttentionCaches(configuration.layerTypes.map { layerType in
             if layerType == "mamba" {
                 return MambaCache()
             } else {
                 return KVCacheSimple()
             }
-        }
+        }, parameters: parameters)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

@@ -476,13 +476,13 @@ public class JambaModel: Module, LLMModel, KVCacheDimensionProvider {
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.map { layer in
+        return wrapTriAttentionCaches(model.layers.map { layer in
             if layer.isAttn {
                 return KVCacheSimple()
             } else {
                 return MambaCache()
             }
-        }
+        }, parameters: parameters)
     }
 
     public init(_ config: JambaConfiguration) {

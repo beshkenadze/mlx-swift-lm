@@ -31,7 +31,19 @@ private func attentionWithCacheUpdateAndSinks(
         )
     }
 
-    if let quantizedKVCache = cache as? QuantizedKVCacheProtocol {
+    if let turboQuantCache = cache as? TurboQuantKVCacheProtocol {
+        precondition(sinks == nil, "TurboQuant SDPA does not support attention sinks.")
+        let (packedKeys, packedValues) = turboQuantCache.updateTurboQuantPacked(keys: keys, values: values)
+        return turboQuantScaledDotProductAttention(
+            queries: queries,
+            packedKeys: packedKeys,
+            packedValues: packedValues,
+            scale: scale,
+            mask: mask,
+            bits: turboQuantCache.turboQuantBits,
+            seed: turboQuantCache.turboQuantSeed
+        )
+    } else if let quantizedKVCache = cache as? QuantizedKVCacheProtocol {
         precondition(sinks == nil, "Quantized SDPA does not support attention sinks.")
         let (quantizedKeys, quantizedValues) = quantizedKVCache.updateQuantized(
             keys: keys, values: values)
@@ -169,8 +181,8 @@ class MiMoV2FlashAttention: Module {
         var k = keys.reshaped(B, L, numKeyValueHeads, -1).transposed(0, 2, 1, 3)
         let v = values.reshaped(B, L, numKeyValueHeads, -1).transposed(0, 2, 1, 3)
 
-        q = applyRotaryPosition(rope, to: q, cache: cache)
-        k = applyRotaryPosition(rope, to: k, cache: cache)
+        q = applyRotaryPosition(rope, to: q, cache: cache, kind: .query)
+        k = applyRotaryPosition(rope, to: k, cache: cache, kind: .key)
 
         let output = attentionWithCacheUpdateAndSinks(
             queries: q,
@@ -458,13 +470,13 @@ public class MiMoV2FlashModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.map { layer in
+        return wrapTriAttentionCaches(model.layers.map { layer in
             if layer.isSlidingWindow {
                 return RotatingKVCache(maxSize: configuration.slidingWindowSize)
             } else {
                 return KVCacheSimple()
             }
-        }
+        }, parameters: parameters)
     }
 }
 

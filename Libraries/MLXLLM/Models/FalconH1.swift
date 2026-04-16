@@ -303,7 +303,7 @@ class FalconH1Attention: Module {
         values = values.reshaped(B, L, numKVHeads, -1).transposed(0, 2, 1, 3)
 
         queries = applyRotaryPosition(rope, to: queries, cache: cache)
-        keys = applyRotaryPosition(rope, to: keys, cache: cache)
+        keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
 
         if let cache {
             (keys, values) = cache.update(keys: keys, values: values)
@@ -741,7 +741,9 @@ public class FalconH1Model: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [any KVCache] {
-        model.layers.map { _ in CacheList(MambaCache(), KVCacheSimple()) }
+        wrapTriAttentionCaches(
+            model.layers.map { _ in CacheList(MambaCache(), KVCacheSimple()) },
+            parameters: parameters)
     }
 }
 

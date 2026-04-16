@@ -94,7 +94,7 @@ public class Gemma4Model: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [any KVCache] {
-        languageModel.newCache(parameters: parameters)
+        wrapTriAttentionCaches(languageModel.newCache(parameters: parameters), parameters: parameters)
     }
 }
 

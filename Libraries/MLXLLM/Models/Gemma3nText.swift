@@ -275,7 +275,7 @@ class Gemma3nAttention: Module {
                 keys = kProj(x).reshaped(B, L, -1, headDim)
                 keys = kNorm(keys)
                 keys = keys.transposed(0, 2, 1, 3)
-                keys = applyRotaryPosition(rope, to: keys, cache: cache)
+                keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
 
                 values = vProj(x).reshaped(B, L, -1, headDim)
                 values = vNorm(values)
@@ -289,7 +289,7 @@ class Gemma3nAttention: Module {
             keys = kProj(x).reshaped(B, L, -1, headDim)
             keys = kNorm(keys)
             keys = keys.transposed(0, 2, 1, 3)
-            keys = applyRotaryPosition(rope, to: keys, cache: cache)
+            keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
 
             values = vProj(x).reshaped(B, L, -1, headDim)
             values = vNorm(values)
@@ -301,7 +301,7 @@ class Gemma3nAttention: Module {
         }
 
         queries = queries.transposed(0, 2, 1, 3)
-        queries = applyRotaryPosition(rope, to: queries, cache: cache)
+        queries = applyRotaryPosition(rope, to: queries, cache: cache, kind: .query)
 
         var adjustedMask = mask
         if case .array(let maskArray) = mask {
@@ -698,7 +698,7 @@ public class Gemma3nLanguageModel: Module {
                 fatalError("Unknown layer type: \(layerType) for layer \(i)")
             }
         }
-        return caches
+        return wrapTriAttentionCaches(caches, parameters: parameters)
     }
 
     init(_ config: Gemma3nTextConfiguration) {
@@ -973,7 +973,7 @@ public class Gemma3nTextModel: Module, LLMModel {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [any KVCache] {
-        return languageModel.newCache(parameters: parameters)
+        return wrapTriAttentionCaches(languageModel.newCache(parameters: parameters), parameters: parameters)
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {

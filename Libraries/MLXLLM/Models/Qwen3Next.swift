@@ -99,8 +99,8 @@ public final class Qwen3NextAttention: Module {
         keys = kNorm(keys.reshaped(B, L, args.kvHeads, -1)).transposed(0, 2, 1, 3)
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
-        queries = applyRotaryPosition(rope, to: queries, cache: cache)
-        keys = applyRotaryPosition(rope, to: keys, cache: cache)
+        queries = applyRotaryPosition(rope, to: queries, cache: cache, kind: .query)
+        keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
 
         let output = attentionWithCacheUpdate(
             queries: queries,
@@ -493,12 +493,12 @@ public class Qwen3NextModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.map { layer in
+        return wrapTriAttentionCaches(model.layers.map { layer in
             if layer.isLinear {
                 return MambaCache()
             }
             return KVCacheSimple()
-        }
+        }, parameters: parameters)
     }
 
     public func makeCache() -> [KVCache] {

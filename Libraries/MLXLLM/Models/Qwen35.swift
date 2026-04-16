@@ -360,7 +360,7 @@ final class Qwen35Attention: Module {
         values = values.reshaped(B, L, kvHeads, -1).transposed(0, 2, 1, 3)
 
         queries = applyRotaryPosition(rope, to: queries, cache: cache)
-        keys = applyRotaryPosition(rope, to: keys, cache: cache)
+        keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
 
         let output = attentionWithCacheUpdate(
             queries: queries,
@@ -578,12 +578,12 @@ public class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.map { layer in
+        return wrapTriAttentionCaches(model.layers.map { layer in
             if layer.isLinear {
                 return MambaCache()
             }
             return KVCacheSimple()
-        }
+        }, parameters: parameters)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -651,7 +651,7 @@ public class Qwen35Model: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        languageModel.newCache(parameters: parameters)
+        wrapTriAttentionCaches(languageModel.newCache(parameters: parameters), parameters: parameters)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

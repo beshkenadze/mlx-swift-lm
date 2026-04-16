@@ -88,7 +88,7 @@ class Mistral3Attention: Module {
 
         // Apply RoPE
         queries = applyRotaryPosition(rope, to: queries, cache: cache)
-        keys = applyRotaryPosition(rope, to: keys, cache: cache)
+        keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
 
         // Apply attention scaling
         queries = queries * attnScale
@@ -350,13 +350,13 @@ public class Mistral3TextModel: Module, LLMModel, KVCacheDimensionProvider {
     /// Sliding window attention layers use RotatingKVCache,
     /// full attention layers use standard KVCacheSimple.
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.map { layer in
+        return wrapTriAttentionCaches(model.layers.map { layer in
             if layer.useSliding, let slidingWindow = args.slidingWindow {
                 return RotatingKVCache(maxSize: slidingWindow)
             } else {
                 return KVCacheSimple()
             }
-        }
+        }, parameters: parameters)
     }
 }
 

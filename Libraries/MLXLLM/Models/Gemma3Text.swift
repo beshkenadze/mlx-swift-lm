@@ -197,8 +197,8 @@ class Gemma3Attention: Module {
         queries = queryNorm(queries)
         keys = keyNorm(keys)
 
-        queries = applyRotaryPosition(rope, to: queries, cache: cache)
-        keys = applyRotaryPosition(rope, to: keys, cache: cache)
+        queries = applyRotaryPosition(rope, to: queries, cache: cache, kind: .query)
+        keys = applyRotaryPosition(rope, to: keys, cache: cache, kind: .key)
 
         let output = attentionWithCacheUpdate(
             queries: queries,

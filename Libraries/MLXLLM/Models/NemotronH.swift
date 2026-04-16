@@ -740,7 +740,7 @@ public class NemotronHModel: Module, LLMModel, KVCacheDimensionProvider, LoRAMod
 
     public func newCache(parameters: GenerateParameters?) -> [KVCache] {
         let pattern = Array(configuration.hybridOverridePattern)
-        return pattern.compactMap { char -> KVCache? in
+        return wrapTriAttentionCaches(pattern.compactMap { char -> KVCache? in
             let blockType = NemotronHBlockType(from: char)
             switch blockType {
             case .mamba:
@@ -750,7 +750,7 @@ public class NemotronHModel: Module, LLMModel, KVCacheDimensionProvider, LoRAMod
             case .mlp, .moe:
                 return nil  // No cache needed for MLP/MoE layers
             }
-        }
+        }, parameters: parameters)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

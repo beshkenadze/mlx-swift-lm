@@ -278,7 +278,7 @@ private class Gemma4Attention: Module {
             k = k.transposed(0, 2, 1, 3)
 
             currentOffset = cache?.offset ?? 0
-            k = rope(k, offset: currentOffset)
+            k = applyRotaryPosition(rope, to: k, offset: currentOffset, cache: cache, kind: .key)
 
             var v: MLXArray
             if let vProj {
@@ -300,7 +300,8 @@ private class Gemma4Attention: Module {
         }
 
         queries = queries.transposed(0, 2, 1, 3)
-        queries = rope(queries, offset: currentOffset)
+        queries = applyRotaryPosition(
+            rope, to: queries, offset: currentOffset, cache: cache, kind: .query)
 
         // Adjust mask if cache size differs from mask size
         var adjustedMask = mask
@@ -667,7 +668,7 @@ public class Gemma4TextModel: Module, LLMModel, KVCacheDimensionProvider {
                 caches.append(RotatingKVCache(maxSize: config.slidingWindow, keep: 0))
             }
         }
-        return caches
+        return wrapTriAttentionCaches(caches, parameters: parameters)
     }
 }
 
