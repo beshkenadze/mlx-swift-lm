@@ -880,7 +880,7 @@ func scoreKeys(
     }
 }
 
-private func decomposeComplex(
+func decomposeComplex(
     _ vectors: MLXArray,
     rope: TriAttentionRoPEConfig
 ) -> (MLXArray, MLXArray) {
