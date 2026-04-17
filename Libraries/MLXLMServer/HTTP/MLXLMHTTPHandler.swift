@@ -38,6 +38,8 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         switch (head.method, path) {
         case (.GET, "/health"):
             handleHealth(context: context, head: head)
+        case (.GET, "/v1/models"):
+            handleListModels(context: context, head: head)
         default:
             respondJSON(
                 context: context,
@@ -70,6 +72,40 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                     context: contextBox.value,
                     head: headBox.value,
                     status: status,
+                    body: json
+                )
+            }
+        }
+    }
+
+    private func handleListModels(context: ChannelHandlerContext, head: HTTPRequestHead) {
+        let eventLoop = context.eventLoop
+        let contextBox = NIOLoopBound(context, eventLoop: eventLoop)
+        let headBox = NIOLoopBound(head, eventLoop: eventLoop)
+        let engine = self.engine
+
+        Task {
+            let models = await engine.availableModels()
+            let data: [[String: Any]] = models.map { model in
+                [
+                    "id": model.id,
+                    "object": "model",
+                    "created": model.created,
+                    "owned_by": model.ownedBy,
+                ]
+            }
+            let payload: [String: Any] = [
+                "object": "list",
+                "data": data,
+            ]
+            let encoded = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
+            let json = String(data: encoded, encoding: .utf8) ?? "{\"object\":\"list\",\"data\":[]}"
+
+            eventLoop.execute {
+                self.respondJSON(
+                    context: contextBox.value,
+                    head: headBox.value,
+                    status: .ok,
                     body: json
                 )
             }
