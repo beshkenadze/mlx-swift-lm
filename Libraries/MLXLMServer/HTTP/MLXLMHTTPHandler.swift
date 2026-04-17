@@ -10,11 +10,13 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias OutboundOut = HTTPServerResponsePart
 
     private let engine: InferenceEngine
+    private let gate: SingleFlightGate
     private var requestHead: HTTPRequestHead?
     private var requestBody = ByteBuffer()
 
-    init(engine: InferenceEngine) {
+    init(engine: InferenceEngine, gate: SingleFlightGate) {
         self.engine = engine
+        self.gate = gate
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -119,10 +121,54 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         let contextBox = NIOLoopBound(context, eventLoop: eventLoop)
         let headBox = NIOLoopBound(head, eventLoop: eventLoop)
         let engine = self.engine
+        let gate = self.gate
 
         let bodyBytes = Data(requestBody.readableBytesView)
 
         Task {
+            do {
+                try await gate.acquire()
+            } catch SingleFlightError.busy {
+                let busyPayload: [String: Any] = [
+                    "error": [
+                        "message": "another request is in flight",
+                        "type": "rate_limit_error",
+                    ],
+                ]
+                let encodedBusy = (try? JSONSerialization.data(withJSONObject: busyPayload, options: [.sortedKeys])) ?? Data()
+                let busyBody = String(data: encodedBusy, encoding: .utf8)
+                    ?? #"{"error":{"message":"another request is in flight","type":"rate_limit_error"}}"#
+                eventLoop.execute {
+                    self.respondJSON(
+                        context: contextBox.value,
+                        head: headBox.value,
+                        status: .conflict,
+                        body: busyBody
+                    )
+                }
+                return
+            } catch {
+                let errorPayload: [String: Any] = [
+                    "error": [
+                        "message": String(describing: error),
+                        "type": "server_error",
+                    ],
+                ]
+                let encodedError = (try? JSONSerialization.data(withJSONObject: errorPayload, options: [.sortedKeys])) ?? Data()
+                let errorBody = String(data: encodedError, encoding: .utf8)
+                    ?? #"{"error":{"message":"internal error","type":"server_error"}}"#
+                eventLoop.execute {
+                    self.respondJSON(
+                        context: contextBox.value,
+                        head: headBox.value,
+                        status: .internalServerError,
+                        body: errorBody
+                    )
+                }
+                return
+            }
+            defer { Task { await gate.release() } }
+
             let chatRequest: ChatRequest
             do {
                 chatRequest = try ChatRequestDecoder.decode(bodyBytes)

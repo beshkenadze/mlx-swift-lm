@@ -14,6 +14,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
     public let host: String
     public let port: Int
     private let engine: InferenceEngine
+    private let gate = SingleFlightGate()
     private let eventLoopGroup: MultiThreadedEventLoopGroup
     private var boundChannel: Channel?
 
@@ -33,6 +34,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
     /// another task to terminate.
     public func run() throws {
         let engine = self.engine
+        let gate = self.gate
         let bootstrap = ServerBootstrap(group: eventLoopGroup)
             .serverChannelOption(ChannelOptions.backlog, value: 8)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -41,7 +43,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
                     withPipeliningAssistance: true,
                     withErrorHandling: true
                 ).flatMap {
-                    channel.pipeline.addHandler(MLXLMHTTPHandler(engine: engine))
+                    channel.pipeline.addHandler(MLXLMHTTPHandler(engine: engine, gate: gate))
                 }
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -58,6 +60,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
     /// `stop()` to tear down.
     public func bindAndRun() throws -> (Channel, Int) {
         let engine = self.engine
+        let gate = self.gate
         let bootstrap = ServerBootstrap(group: eventLoopGroup)
             .serverChannelOption(ChannelOptions.backlog, value: 8)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -66,7 +69,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
                     withPipeliningAssistance: true,
                     withErrorHandling: true
                 ).flatMap {
-                    channel.pipeline.addHandler(MLXLMHTTPHandler(engine: engine))
+                    channel.pipeline.addHandler(MLXLMHTTPHandler(engine: engine, gate: gate))
                 }
             }
 
