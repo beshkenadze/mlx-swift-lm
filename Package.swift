@@ -130,6 +130,15 @@ let package = Package(
             exclude: ["README.md"]
         ),
         .testTarget(
+            name: "MLXLMServerTests",
+            dependencies: [
+                "MLXLMServer",
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
+            path: "Tests/MLXLMServerTests"
+        ),
+        .testTarget(
             name: "MLXLMTests",
             dependencies: [
                 .product(name: "MLX", package: "mlx-swift"),
