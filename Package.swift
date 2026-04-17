@@ -43,6 +43,8 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.75.0"),
         .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.3.0"),
+        .package(url: "https://github.com/huggingface/swift-huggingface", from: "0.9.0"),
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
     ],
     targets: [
         .target(
@@ -98,10 +100,15 @@ let package = Package(
         .target(
             name: "MLXLMServer",
             dependencies: [
+                "MLXLMCommon",
+                "MLXLLM",
+                "MLXHuggingFace",
                 .product(name: "NIO", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "Jinja", package: "swift-jinja"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
             ],
             path: "Libraries/MLXLMServer",
             exclude: [
