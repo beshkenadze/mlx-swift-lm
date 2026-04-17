@@ -29,6 +29,9 @@ let package = Package(
             name: "MLXHuggingFace",
             targets: ["MLXHuggingFace"]),
         .library(
+            name: "MLXLMServer",
+            targets: ["MLXLMServer"]),
+        .library(
             name: "BenchmarkHelpers",
             targets: ["BenchmarkHelpers"]),
         .library(
@@ -38,6 +41,7 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.3")),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.75.0"),
     ],
     targets: [
         .target(
@@ -86,6 +90,18 @@ let package = Package(
                 .target(name: "MLXLMCommon"),
             ],
             path: "Libraries/MLXEmbedders",
+            exclude: [
+                "README.md"
+            ]
+        ),
+        .target(
+            name: "MLXLMServer",
+            dependencies: [
+                .product(name: "NIO", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
+            path: "Libraries/MLXLMServer",
             exclude: [
                 "README.md"
             ]
