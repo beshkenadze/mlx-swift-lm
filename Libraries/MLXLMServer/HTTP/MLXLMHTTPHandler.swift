@@ -147,6 +147,73 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 return
             }
 
+            if chatRequest.stream {
+                let chatID = "chatcmpl-\(UUID().uuidString)"
+                let createdTs = Int(Date().timeIntervalSince1970)
+                let model = chatRequest.modelID
+
+                eventLoop.execute {
+                    var headers = HTTPHeaders()
+                    headers.add(name: "content-type", value: "text/event-stream")
+                    headers.add(name: "cache-control", value: "no-cache")
+                    headers.add(name: "connection", value: "keep-alive")
+                    contextBox.value.writeAndFlush(
+                        self.wrapOutboundOut(
+                            .head(HTTPResponseHead(
+                                version: headBox.value.version,
+                                status: .ok,
+                                headers: headers
+                            ))
+                        ),
+                        promise: nil
+                    )
+                }
+
+                var firstChunkEmitted = false
+                var streamFinishReason: FinishReason?
+                do {
+                    for try await delta in engine.generate(chatRequest) {
+                        for fragment in delta.textFragments where !fragment.isEmpty {
+                            let includeRole = !firstChunkEmitted
+                            let frame = SSEFrame.chatCompletionChunk(
+                                id: chatID,
+                                model: model,
+                                created: createdTs,
+                                contentDelta: fragment,
+                                finishReason: nil,
+                                includeAssistantRole: includeRole
+                            )
+                            firstChunkEmitted = true
+                            eventLoop.execute {
+                                self.writeSSEFrame(context: contextBox.value, frame: frame)
+                            }
+                        }
+                        if let reason = delta.finishReason { streamFinishReason = reason }
+                    }
+                } catch {
+                    // best-effort: emit finishReason=stop anyway
+                }
+
+                let finalFrame = SSEFrame.chatCompletionChunk(
+                    id: chatID,
+                    model: model,
+                    created: createdTs,
+                    contentDelta: nil,
+                    finishReason: (streamFinishReason ?? .stop).rawValue,
+                    includeAssistantRole: false
+                )
+                eventLoop.execute {
+                    self.writeSSEFrame(context: contextBox.value, frame: finalFrame)
+                    self.writeSSEFrame(context: contextBox.value, frame: SSEFrame.done)
+                    contextBox.value.writeAndFlush(
+                        self.wrapOutboundOut(.end(nil)),
+                        promise: nil
+                    )
+                    contextBox.value.close(promise: nil)
+                }
+                return
+            }
+
             var text = ""
             var finishReason: FinishReason?
             var usage: Usage?
@@ -203,6 +270,13 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 )
             }
         }
+    }
+
+    private func writeSSEFrame(context: ChannelHandlerContext, frame: String) {
+        let bytes = Data(frame.utf8)
+        var buffer = context.channel.allocator.buffer(capacity: bytes.count)
+        buffer.writeBytes(bytes)
+        context.writeAndFlush(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
     }
 
     private func respondJSON(
