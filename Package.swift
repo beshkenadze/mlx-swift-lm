@@ -31,6 +31,9 @@ let package = Package(
         .library(
             name: "MLXLMServer",
             targets: ["MLXLMServer"]),
+        .executable(
+            name: "mlx-lm-server",
+            targets: ["MLXLMServerCLI"]),
         .library(
             name: "BenchmarkHelpers",
             targets: ["BenchmarkHelpers"]),
@@ -114,6 +117,11 @@ let package = Package(
             exclude: [
                 "README.md"
             ]
+        ),
+        .executableTarget(
+            name: "MLXLMServerCLI",
+            dependencies: ["MLXLMServer"],
+            path: "Libraries/MLXLMServerCLI"
         ),
         .target(
             name: "BenchmarkHelpers",
