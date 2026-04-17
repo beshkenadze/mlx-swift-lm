@@ -33,6 +33,18 @@ public struct ChatRequest: Sendable {
         self.stopSequences = stopSequences
         self.stream = stream
     }
+
+    /// Returns a copy with a different `modelID`. Used by `EngineRegistry`
+    /// after stripping a routing prefix before delegating to the inner engine.
+    public func withModelID(_ newModelID: String) -> ChatRequest {
+        ChatRequest(
+            modelID: newModelID,
+            messages: messages,
+            maxTokens: maxTokens,
+            stopSequences: stopSequences,
+            stream: stream
+        )
+    }
 }
 
 /// Why a chat completion stopped.
