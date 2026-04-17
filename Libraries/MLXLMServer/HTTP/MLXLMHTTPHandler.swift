@@ -40,6 +40,8 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             handleHealth(context: context, head: head)
         case (.GET, "/v1/models"):
             handleListModels(context: context, head: head)
+        case (.POST, "/v1/chat/completions"):
+            handleChatCompletions(context: context, head: head)
         default:
             respondJSON(
                 context: context,
@@ -100,6 +102,97 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
             ]
             let encoded = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
             let json = String(data: encoded, encoding: .utf8) ?? "{\"object\":\"list\",\"data\":[]}"
+
+            eventLoop.execute {
+                self.respondJSON(
+                    context: contextBox.value,
+                    head: headBox.value,
+                    status: .ok,
+                    body: json
+                )
+            }
+        }
+    }
+
+    private func handleChatCompletions(context: ChannelHandlerContext, head: HTTPRequestHead) {
+        let eventLoop = context.eventLoop
+        let contextBox = NIOLoopBound(context, eventLoop: eventLoop)
+        let headBox = NIOLoopBound(head, eventLoop: eventLoop)
+        let engine = self.engine
+
+        let bodyBytes = Data(requestBody.readableBytesView)
+
+        Task {
+            let chatRequest: ChatRequest
+            do {
+                chatRequest = try ChatRequestDecoder.decode(bodyBytes)
+            } catch {
+                let errorPayload: [String: Any] = [
+                    "error": [
+                        "message": String(describing: error),
+                        "type": "invalid_request_error",
+                    ],
+                ]
+                let encodedError = (try? JSONSerialization.data(withJSONObject: errorPayload, options: [.sortedKeys])) ?? Data()
+                let errorBody = String(data: encodedError, encoding: .utf8)
+                    ?? #"{"error":{"message":"invalid request","type":"invalid_request_error"}}"#
+                eventLoop.execute {
+                    self.respondJSON(
+                        context: contextBox.value,
+                        head: headBox.value,
+                        status: .badRequest,
+                        body: errorBody
+                    )
+                }
+                return
+            }
+
+            var text = ""
+            var finishReason: FinishReason?
+            var usage: Usage?
+            do {
+                for try await delta in engine.generate(chatRequest) {
+                    text += delta.textFragments.joined()
+                    if let reason = delta.finishReason { finishReason = reason }
+                    if let u = delta.usage { usage = u }
+                }
+            } catch {
+                let errorBody = #"{"error":{"message":"generation failed","type":"server_error"}}"#
+                eventLoop.execute {
+                    self.respondJSON(
+                        context: contextBox.value,
+                        head: headBox.value,
+                        status: .internalServerError,
+                        body: errorBody
+                    )
+                }
+                return
+            }
+
+            let choice: [String: Any] = [
+                "index": 0,
+                "message": [
+                    "role": "assistant",
+                    "content": text,
+                ],
+                "finish_reason": (finishReason ?? .stop).rawValue,
+            ]
+            var payload: [String: Any] = [
+                "id": "chatcmpl-\(UUID().uuidString)",
+                "object": "chat.completion",
+                "created": Int(Date().timeIntervalSince1970),
+                "model": chatRequest.modelID,
+                "choices": [choice],
+            ]
+            if let usage {
+                payload["usage"] = [
+                    "prompt_tokens": usage.promptTokens,
+                    "completion_tokens": usage.completionTokens,
+                    "total_tokens": usage.totalTokens,
+                ]
+            }
+            let encoded = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
+            let json = String(data: encoded, encoding: .utf8) ?? "{}"
 
             eventLoop.execute {
                 self.respondJSON(
