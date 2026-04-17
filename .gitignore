@@ -47,6 +47,10 @@ Package.resolved
 .swiftpm
 
 .build/
+.build-xcode/
+
+# Test coverage artifacts
+*.profraw
 
 # CocoaPods
 #
