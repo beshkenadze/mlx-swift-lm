@@ -169,6 +169,48 @@ public class Qwen3ModelInner: Module {
 
         return norm(h)
     }
+
+    /// Number of decoder layers in this inner model.
+    public var layerCount: Int { layers.count }
+
+    /// Runs a forward pass and captures hidden states at the specified layer indices.
+    ///
+    /// Mirrors ``callAsFunction(_:cache:)`` but captures the post-layer hidden state at each
+    /// requested index and skips the final ``norm`` projection and any LM head.
+    ///
+    /// - Parameters:
+    ///   - inputs: input token IDs, shape `[batch, seqLen]`
+    ///   - layerIndices: zero-based decoder-layer indices whose post-layer outputs to capture
+    ///   - cache: optional KV cache (advances as usual); pass `nil` for a cache-free forward
+    /// - Returns: captured hidden states in the same order as `layerIndices`, each with
+    ///            shape `[batch, seqLen, hiddenSize]`.
+    public func captureHiddenStates(
+        inputs: MLXArray,
+        layerIndices: [Int],
+        cache: [KVCache]? = nil
+    ) -> [MLXArray] {
+        for index in layerIndices {
+            precondition(
+                index >= 0 && index < layers.count,
+                "captureHiddenStates: layer index \(index) out of range 0..<\(layers.count)")
+        }
+
+        var h = embedTokens(inputs)
+        let mask = createAttentionMask(h: h, cache: cache?.first)
+
+        let wanted = Set(layerIndices)
+        var captured: [Int: MLXArray] = [:]
+        captured.reserveCapacity(wanted.count)
+
+        for (i, layer) in layers.enumerated() {
+            h = layer(h, mask: mask, cache: cache?[i])
+            if wanted.contains(i) {
+                captured[i] = h
+            }
+        }
+
+        return layerIndices.map { captured[$0]! }
+    }
 }
 
 public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider {
@@ -209,6 +251,40 @@ public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider {
         }
 
         return weights
+    }
+
+    /// Runs a forward pass and captures post-decoder-layer hidden states at the specified
+    /// layer indices. Does not apply the final ``Qwen3ModelInner/norm`` nor the LM head.
+    ///
+    /// Useful for speculative-decoding drafts (e.g. dFlash) that consume the target model's
+    /// intermediate hidden states.
+    ///
+    /// - Parameters:
+    ///   - inputs: input token IDs, shape `[batch, seqLen]`
+    ///   - layerIndices: zero-based decoder-layer indices whose outputs to capture
+    ///   - cache: optional KV cache (advances as usual); pass `nil` for a cache-free forward
+    /// - Returns: captured hidden states in the order of `layerIndices`, each with shape
+    ///            `[batch, seqLen, hiddenSize]`.
+    public func captureHiddenStates(
+        inputs: MLXArray,
+        layerIndices: [Int],
+        cache: [KVCache]? = nil
+    ) -> [MLXArray] {
+        model.captureHiddenStates(
+            inputs: inputs, layerIndices: layerIndices, cache: cache)
+    }
+
+    /// Returns the LM-head projection weight. For models with ``Qwen3Configuration/tieWordEmbeddings``
+    /// set, there is no separate ``lmHead`` and callers should fall back to the token embedding
+    /// weight (exposed as ``tiedEmbeddingWeight``); this property returns `nil` in that case.
+    public var lmHeadWeight: MLXArray? {
+        lmHead?.weight
+    }
+
+    /// Returns the token embedding weight (used as the tied LM head when
+    /// ``Qwen3Configuration/tieWordEmbeddings`` is `true`).
+    public var tiedEmbeddingWeight: MLXArray {
+        model.embedTokens.weight
     }
 }
 
