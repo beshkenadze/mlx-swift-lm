@@ -211,6 +211,51 @@ public class Qwen3ModelInner: Module {
 
         return layerIndices.map { captured[$0]! }
     }
+
+    /// Runs a single forward pass and captures BOTH the requested layer hidden states
+    /// and the final post-norm hidden (ready for LM-head projection).
+    ///
+    /// Mirrors ``captureHiddenStates(inputs:layerIndices:cache:)`` but also applies
+    /// the terminal ``norm`` — the caller can project through the LM head to obtain
+    /// logits. Intended for speculative-decoding hot loops (e.g. dFlash) where the
+    /// target needs both intermediate taps and final logits per cycle; doing both
+    /// from a single forward avoids re-running the target prefix.
+    ///
+    /// - Parameters:
+    ///   - inputs: input token IDs, shape `[batch, seqLen]`
+    ///   - layerIndices: zero-based decoder-layer indices whose post-layer outputs to capture
+    ///   - cache: optional KV cache (advances as usual); pass `nil` for a cache-free forward
+    /// - Returns: `(hiddenStates, finalHidden)` — `hiddenStates` follows `layerIndices`
+    ///   order, each shape `[batch, seqLen, hiddenSize]`; `finalHidden` is
+    ///   `norm(last_layer)` shape `[batch, seqLen, hiddenSize]`.
+    public func captureHiddenStatesAndFinalHidden(
+        inputs: MLXArray,
+        layerIndices: [Int],
+        cache: [KVCache]? = nil
+    ) -> (hiddenStates: [MLXArray], finalHidden: MLXArray) {
+        for index in layerIndices {
+            precondition(
+                index >= 0 && index < layers.count,
+                "captureHiddenStatesAndFinalHidden: layer index \(index) out of range 0..<\(layers.count)")
+        }
+
+        var h = embedTokens(inputs)
+        let mask = createAttentionMask(h: h, cache: cache?.first)
+
+        let wanted = Set(layerIndices)
+        var captured: [Int: MLXArray] = [:]
+        captured.reserveCapacity(wanted.count)
+
+        for (i, layer) in layers.enumerated() {
+            h = layer(h, mask: mask, cache: cache?[i])
+            if wanted.contains(i) {
+                captured[i] = h
+            }
+        }
+
+        let finalHidden = norm(h)
+        return (layerIndices.map { captured[$0]! }, finalHidden)
+    }
 }
 
 public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider {
@@ -272,6 +317,34 @@ public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider {
     ) -> [MLXArray] {
         model.captureHiddenStates(
             inputs: inputs, layerIndices: layerIndices, cache: cache)
+    }
+
+    /// Runs a single forward pass and returns BOTH the selected-layer hidden states
+    /// AND the per-position logits. Doing both in one forward pass avoids the
+    /// O(N·prefill) cost of re-running the target from scratch to capture hidden
+    /// states in speculative-decoding hot loops (e.g. dFlash).
+    ///
+    /// - Parameters:
+    ///   - inputs: input token IDs, shape `[batch, seqLen]`
+    ///   - layerIndices: zero-based decoder-layer indices whose outputs to capture
+    ///   - cache: optional KV cache (advances as usual); pass `nil` for a cache-free forward
+    /// - Returns: `(hiddenStates, logits)` — `hiddenStates` in the order of
+    ///   `layerIndices`, each shape `[batch, seqLen, hiddenSize]`; `logits` shape
+    ///   `[batch, seqLen, vocabSize]`.
+    public func captureHiddenStatesAndLogits(
+        inputs: MLXArray,
+        layerIndices: [Int],
+        cache: [KVCache]? = nil
+    ) -> (hiddenStates: [MLXArray], logits: MLXArray) {
+        let (hiddenStates, finalHidden) = model.captureHiddenStatesAndFinalHidden(
+            inputs: inputs, layerIndices: layerIndices, cache: cache)
+        let logits: MLXArray
+        if let lmHead {
+            logits = lmHead(finalHidden)
+        } else {
+            logits = model.embedTokens.asLinear(finalHidden)
+        }
+        return (hiddenStates, logits)
     }
 
     /// Returns the LM-head projection weight. For models with ``Qwen3Configuration/tieWordEmbeddings``
