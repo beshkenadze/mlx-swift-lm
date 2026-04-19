@@ -59,10 +59,20 @@ public struct Usage: Sendable, Codable, Equatable {
     public let promptTokens: Int
     public let completionTokens: Int
     public var totalTokens: Int { promptTokens + completionTokens }
+    /// Speculative-decoding acceptance rate (0...1) for engines that run
+    /// draft-and-verify loops (e.g. dFlash). `nil` for autoregressive
+    /// baselines. Surfaced on the final delta so downstream loggers can
+    /// record it alongside token counts.
+    public var acceptanceRate: Double?
 
-    public init(promptTokens: Int, completionTokens: Int) {
+    public init(
+        promptTokens: Int,
+        completionTokens: Int,
+        acceptanceRate: Double? = nil
+    ) {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
+        self.acceptanceRate = acceptanceRate
     }
 }
 
