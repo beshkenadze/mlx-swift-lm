@@ -31,21 +31,28 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
     public let port: Int
     private let engine: InferenceEngine
     private let healthResponder: HealthResponder?
+    private let heartbeatInterval: Int?
     private let gate = SingleFlightGate()
     private let eventLoopGroup: MultiThreadedEventLoopGroup
     private var boundChannel: Channel?
 
+    /// - Parameter heartbeatInterval: seconds between SSE `: keepalive\n\n`
+    ///   comments during idle streams. `nil` (default) disables heartbeat.
+    ///   Only fires on `stream=true` responses and resets whenever a
+    ///   `ChatDelta` is produced. See spec §6.6.
     public init(
         engine: InferenceEngine,
         host: String = "127.0.0.1",
         port: Int = 8080,
         numberOfThreads: Int = 1,
-        healthResponder: HealthResponder? = nil
+        healthResponder: HealthResponder? = nil,
+        heartbeatInterval: Int? = nil
     ) {
         self.engine = engine
         self.host = host
         self.port = port
         self.healthResponder = healthResponder
+        self.heartbeatInterval = heartbeatInterval
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: numberOfThreads)
     }
 
@@ -55,6 +62,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
         let engine = self.engine
         let gate = self.gate
         let healthResponder = self.healthResponder
+        let heartbeatInterval = self.heartbeatInterval
         let bootstrap = ServerBootstrap(group: eventLoopGroup)
             .serverChannelOption(ChannelOptions.backlog, value: 8)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -67,7 +75,8 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
                         MLXLMHTTPHandler(
                             engine: engine,
                             gate: gate,
-                            healthResponder: healthResponder
+                            healthResponder: healthResponder,
+                            heartbeatInterval: heartbeatInterval
                         )
                     )
                 }
@@ -88,6 +97,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
         let engine = self.engine
         let gate = self.gate
         let healthResponder = self.healthResponder
+        let heartbeatInterval = self.heartbeatInterval
         let bootstrap = ServerBootstrap(group: eventLoopGroup)
             .serverChannelOption(ChannelOptions.backlog, value: 8)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -100,7 +110,8 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
                         MLXLMHTTPHandler(
                             engine: engine,
                             gate: gate,
-                            healthResponder: healthResponder
+                            healthResponder: healthResponder,
+                            heartbeatInterval: heartbeatInterval
                         )
                     )
                 }

@@ -3,6 +3,12 @@ import Foundation
 public enum SSEFrame {
     public static let done = "data: [DONE]\n\n"
 
+    /// SSE comment line emitted as a heartbeat during idle streams. Matches
+    /// the spec §6.6 wire format (`: keepalive\n\n`). Comments are ignored by
+    /// conformant SSE clients but keep intermediate proxies from closing the
+    /// connection on idle-timeout.
+    public static let keepalive = ": keepalive\n\n"
+
     public static func data(_ jsonBody: String) -> String {
         "data: \(jsonBody)\n\n"
     }

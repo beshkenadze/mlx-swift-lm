@@ -3,6 +3,23 @@ import NIO
 import NIOCore
 import NIOHTTP1
 
+/// Monotonic "last touched" timestamp used by the heartbeat race to decide
+/// whether enough idle time has elapsed to emit a keepalive. Kept as an
+/// actor so touches and reads from the delta-consumer and heartbeat tasks
+/// never interleave; monotonic nanoseconds via `DispatchTime.now()`.
+actor AtomicInstant {
+    private var lastNs: UInt64
+
+    init() { self.lastNs = DispatchTime.now().uptimeNanoseconds }
+
+    func touch() { lastNs = DispatchTime.now().uptimeNanoseconds }
+
+    func elapsedNanoseconds() -> UInt64 {
+        let now = DispatchTime.now().uptimeNanoseconds
+        return now >= lastNs ? now - lastNs : 0
+    }
+}
+
 /// Per-connection HTTP handler. Accumulates a request, routes it, writes
 /// a single response. Streaming endpoints will live here later.
 final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
@@ -12,17 +29,20 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     private let engine: InferenceEngine
     private let gate: SingleFlightGate
     private let healthResponder: MLXLMHTTPServer.HealthResponder?
+    private let heartbeatInterval: Int?
     private var requestHead: HTTPRequestHead?
     private var requestBody = ByteBuffer()
 
     init(
         engine: InferenceEngine,
         gate: SingleFlightGate,
-        healthResponder: MLXLMHTTPServer.HealthResponder? = nil
+        healthResponder: MLXLMHTTPServer.HealthResponder? = nil,
+        heartbeatInterval: Int? = nil
     ) {
         self.engine = engine
         self.gate = gate
         self.healthResponder = healthResponder
+        self.heartbeatInterval = heartbeatInterval
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -241,24 +261,39 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
                 var firstChunkEmitted = false
                 var streamFinishReason: FinishReason?
+                let heartbeatIntervalSeconds = self.heartbeatInterval
                 do {
-                    for try await delta in engine.generate(chatRequest) {
-                        for fragment in delta.textFragments where !fragment.isEmpty {
-                            let includeRole = !firstChunkEmitted
-                            let frame = SSEFrame.chatCompletionChunk(
-                                id: chatID,
-                                model: model,
-                                created: createdTs,
-                                contentDelta: fragment,
-                                finishReason: nil,
-                                includeAssistantRole: includeRole
-                            )
-                            firstChunkEmitted = true
+                    let events = Self.mergeDeltasWithHeartbeat(
+                        stream: engine.generate(chatRequest),
+                        heartbeatInterval: heartbeatIntervalSeconds
+                    )
+                    for try await event in events {
+                        switch event {
+                        case .heartbeat:
                             eventLoop.execute {
-                                self.writeSSEFrame(context: contextBox.value, frame: frame)
+                                self.writeSSEFrame(
+                                    context: contextBox.value,
+                                    frame: SSEFrame.keepalive
+                                )
                             }
+                        case .delta(let delta):
+                            for fragment in delta.textFragments where !fragment.isEmpty {
+                                let includeRole = !firstChunkEmitted
+                                let frame = SSEFrame.chatCompletionChunk(
+                                    id: chatID,
+                                    model: model,
+                                    created: createdTs,
+                                    contentDelta: fragment,
+                                    finishReason: nil,
+                                    includeAssistantRole: includeRole
+                                )
+                                firstChunkEmitted = true
+                                eventLoop.execute {
+                                    self.writeSSEFrame(context: contextBox.value, frame: frame)
+                                }
+                            }
+                            if let reason = delta.finishReason { streamFinishReason = reason }
                         }
-                        if let reason = delta.finishReason { streamFinishReason = reason }
                     }
                 } catch {
                     // best-effort: emit finishReason=stop anyway
@@ -338,6 +373,75 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                     status: .ok,
                     body: json
                 )
+            }
+        }
+    }
+
+    /// Event emitted by `mergeDeltasWithHeartbeat`: either a `ChatDelta` from
+    /// the engine or a heartbeat tick requesting a `: keepalive\n\n` SSE
+    /// comment on the wire. Heartbeats reset each time a delta is observed.
+    enum StreamEvent {
+        case delta(ChatDelta)
+        case heartbeat
+    }
+
+    /// Race the engine's delta stream against a periodic heartbeat timer.
+    ///
+    /// When `heartbeatInterval` is `nil` or `<= 0` this degrades to forwarding
+    /// deltas unchanged (no heartbeat task spawned). Otherwise a sibling task
+    /// yields `.heartbeat` events whenever `heartbeatInterval` seconds elapse
+    /// without a delta. The timer resets on every observed delta. Errors from
+    /// the inner stream propagate as `AsyncThrowingStream` failures.
+    static func mergeDeltasWithHeartbeat(
+        stream: AsyncThrowingStream<ChatDelta, Error>,
+        heartbeatInterval: Int?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        guard let interval = heartbeatInterval, interval > 0 else {
+            return AsyncThrowingStream { continuation in
+                let task = Task {
+                    do {
+                        for try await delta in stream {
+                            continuation.yield(.delta(delta))
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        }
+
+        let nanos = UInt64(interval) * 1_000_000_000
+        // Actor is @unchecked Sendable so it can be shared with tasks that
+        // outlive the call boundary without requiring `let` capture heroics.
+        let lastDelta = AtomicInstant()
+        return AsyncThrowingStream { continuation in
+            let deltaTask = Task {
+                do {
+                    for try await delta in stream {
+                        await lastDelta.touch()
+                        continuation.yield(.delta(delta))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            let heartbeatTask = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(nanoseconds: nanos)
+                    if Task.isCancelled { break }
+                    let idleNs = await lastDelta.elapsedNanoseconds()
+                    if idleNs >= nanos {
+                        continuation.yield(.heartbeat)
+                        await lastDelta.touch()
+                    }
+                }
+            }
+            continuation.onTermination = { _ in
+                deltaTask.cancel()
+                heartbeatTask.cancel()
             }
         }
     }
