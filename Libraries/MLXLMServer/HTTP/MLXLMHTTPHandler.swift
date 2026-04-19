@@ -11,12 +11,18 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private let engine: InferenceEngine
     private let gate: SingleFlightGate
+    private let healthResponder: MLXLMHTTPServer.HealthResponder?
     private var requestHead: HTTPRequestHead?
     private var requestBody = ByteBuffer()
 
-    init(engine: InferenceEngine, gate: SingleFlightGate) {
+    init(
+        engine: InferenceEngine,
+        gate: SingleFlightGate,
+        healthResponder: MLXLMHTTPServer.HealthResponder? = nil
+    ) {
         self.engine = engine
         self.gate = gate
+        self.healthResponder = healthResponder
     }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
@@ -58,6 +64,24 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
         let eventLoop = context.eventLoop
         let contextBox = NIOLoopBound(context, eventLoop: eventLoop)
         let headBox = NIOLoopBound(head, eventLoop: eventLoop)
+
+        if let responder = self.healthResponder {
+            Task {
+                let response = await responder()
+                let status = HTTPResponseStatus(statusCode: response.status)
+                let json = String(data: response.body, encoding: .utf8) ?? "{}"
+                eventLoop.execute {
+                    self.respondJSON(
+                        context: contextBox.value,
+                        head: headBox.value,
+                        status: status,
+                        body: json
+                    )
+                }
+            }
+            return
+        }
+
         let engine = self.engine
 
         Task {

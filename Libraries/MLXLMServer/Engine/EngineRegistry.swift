@@ -112,6 +112,17 @@ public final class EngineRegistry: InferenceEngine, @unchecked Sendable {
         return EngineHealth(ready: anyReady, modelIDs: ids, uptimeSeconds: uptime)
     }
 
+    /// Per-engine health, keyed by routing `prefix`. Callers (e.g. dflash-server)
+    /// use this to render the §6.3 breakdown shape at `/health` without losing
+    /// the per-engine ready/uptime/model-id detail collapsed by `health()`.
+    public func engineHealth() async -> [String: EngineHealth] {
+        var result: [String: EngineHealth] = [:]
+        for entry in entries {
+            result[entry.prefix] = await entry.engine.health()
+        }
+        return result
+    }
+
     public func generate(_ request: ChatRequest) -> AsyncThrowingStream<ChatDelta, Error> {
         let (chosenEntry, innerID): (EngineRegistryEntry?, String) = {
             if let (prefix, remainder) = Self.splitPrefix(request.modelID),

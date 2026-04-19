@@ -195,6 +195,44 @@ final class EngineRegistryTests: XCTestCase {
         }
     }
 
+    // MARK: - Per-engine health breakdown
+
+    func testEngineHealthBreakdown() async throws {
+        let baseline = NamedStubEngine(
+            models: [.init(id: "X", created: 0, ownedBy: "t")],
+            tag: "baseline"
+        )
+        let dflash = NamedStubEngine(
+            models: [.init(id: "Y", created: 0, ownedBy: "t")],
+            tag: "dflash"
+        )
+        let registry = try EngineRegistry([
+            .init(prefix: "baseline", engine: baseline, isDefault: true),
+            .init(prefix: "dflash", engine: dflash),
+        ])
+        let breakdown = await registry.engineHealth()
+        XCTAssertEqual(Set(breakdown.keys), ["baseline", "dflash"])
+        XCTAssertTrue(breakdown["baseline"]!.ready)
+        XCTAssertTrue(breakdown["dflash"]!.ready)
+        XCTAssertEqual(breakdown["baseline"]!.modelIDs, ["X"])
+        XCTAssertEqual(breakdown["dflash"]!.modelIDs, ["Y"])
+    }
+
+    func testEngineHealthBreakdownReflectsUnreadyEngine() async throws {
+        let baseline = NamedStubEngine(
+            models: [.init(id: "X", created: 0, ownedBy: "t")],
+            tag: "baseline"
+        )
+        let dflashNotReady = NamedStubEngine(models: [], tag: "dflash")
+        let registry = try EngineRegistry([
+            .init(prefix: "baseline", engine: baseline, isDefault: true),
+            .init(prefix: "dflash", engine: dflashNotReady),
+        ])
+        let breakdown = await registry.engineHealth()
+        XCTAssertTrue(breakdown["baseline"]!.ready)
+        XCTAssertFalse(breakdown["dflash"]!.ready)
+    }
+
     func testInnerEngineSeesStrippedModelID() async throws {
         let baseline = InspectingStubEngine(
             models: [.init(id: "inner", created: 0, ownedBy: "t")]

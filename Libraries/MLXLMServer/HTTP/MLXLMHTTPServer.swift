@@ -11,9 +11,26 @@ import NIOPosix
 /// Additional handlers (`/v1/models`, `/v1/chat/completions`) land in
 /// follow-up commits.
 public final class MLXLMHTTPServer: @unchecked Sendable {
+    /// Response to `GET /health`. Implementations MUST return within ~10 ms.
+    /// `status` is the HTTP status to emit (typically 200 for ready, 503 for
+    /// not-ready); `body` is the raw JSON bytes written verbatim with
+    /// `content-type: application/json; charset=utf-8`.
+    public struct HealthResponse: Sendable {
+        public let status: Int
+        public let body: Data
+
+        public init(status: Int, body: Data) {
+            self.status = status
+            self.body = body
+        }
+    }
+
+    public typealias HealthResponder = @Sendable () async -> HealthResponse
+
     public let host: String
     public let port: Int
     private let engine: InferenceEngine
+    private let healthResponder: HealthResponder?
     private let gate = SingleFlightGate()
     private let eventLoopGroup: MultiThreadedEventLoopGroup
     private var boundChannel: Channel?
@@ -22,11 +39,13 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
         engine: InferenceEngine,
         host: String = "127.0.0.1",
         port: Int = 8080,
-        numberOfThreads: Int = 1
+        numberOfThreads: Int = 1,
+        healthResponder: HealthResponder? = nil
     ) {
         self.engine = engine
         self.host = host
         self.port = port
+        self.healthResponder = healthResponder
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: numberOfThreads)
     }
 
@@ -35,6 +54,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
     public func run() throws {
         let engine = self.engine
         let gate = self.gate
+        let healthResponder = self.healthResponder
         let bootstrap = ServerBootstrap(group: eventLoopGroup)
             .serverChannelOption(ChannelOptions.backlog, value: 8)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -43,7 +63,13 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
                     withPipeliningAssistance: true,
                     withErrorHandling: true
                 ).flatMap {
-                    channel.pipeline.addHandler(MLXLMHTTPHandler(engine: engine, gate: gate))
+                    channel.pipeline.addHandler(
+                        MLXLMHTTPHandler(
+                            engine: engine,
+                            gate: gate,
+                            healthResponder: healthResponder
+                        )
+                    )
                 }
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -61,6 +87,7 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
     public func bindAndRun() throws -> (Channel, Int) {
         let engine = self.engine
         let gate = self.gate
+        let healthResponder = self.healthResponder
         let bootstrap = ServerBootstrap(group: eventLoopGroup)
             .serverChannelOption(ChannelOptions.backlog, value: 8)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -69,7 +96,13 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
                     withPipeliningAssistance: true,
                     withErrorHandling: true
                 ).flatMap {
-                    channel.pipeline.addHandler(MLXLMHTTPHandler(engine: engine, gate: gate))
+                    channel.pipeline.addHandler(
+                        MLXLMHTTPHandler(
+                            engine: engine,
+                            gate: gate,
+                            healthResponder: healthResponder
+                        )
+                    )
                 }
             }
 
