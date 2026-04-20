@@ -146,6 +146,25 @@ let container = try await loadModelContainer(
 
 Or use the underlying API to control every aspect of the evaluation.
 
+### DFlash speculative decoding
+
+`MLXLMServer` includes a Stage 2 DFlash speculative decoding path for the
+supported BF16 pair:
+
+- target: `mlx-community/Qwen3-4B-bf16`
+- draft: `z-lab/Qwen3-4B-DFlash-b16`
+
+Serve it through the OpenAI-compatible HTTP surface with `model: "dflash:qwen3-4b"`.
+For the user-facing spec and current limitations, see
+[`docs/specs/dflash-stage2.md`](docs/specs/dflash-stage2.md). For the Stage 2
+implementation checklist and acceptance criteria, see
+[`docs/plans/2026-04-19-dflash-stage2-bf16-mvp.md`](docs/plans/2026-04-19-dflash-stage2-bf16-mvp.md).
+
+Helper scripts:
+
+- `scripts/smoke-dflash.sh --dflash` validates the baseline + DFlash server routes end-to-end
+- `scripts/bench-dflash.sh` compares baseline vs DFlash throughput on the same prompt after the smoke run has warmed the model cache
+
 ## Migrating to Version 3
 
 Version 3 of MLX Swift LM decouples the tokenizer and downloader implementations. See the [integrations](#Tokenizer-and-Downloader-Integrations) section for details.
@@ -307,4 +326,3 @@ The `defaultHubApi` global has been removed. Hugging Face Hub access is now prov
 - `loadTokenizerConfig(configuration:hub:)` → `AutoTokenizer.from(directory:)`
 - `ModelFactory._load(hub:configuration:progressHandler:)` → `_load(configuration: ResolvedModelConfiguration)`
 - `ModelFactory._loadContainer`: removed (base `loadContainer` now builds the container from `_load`)
-

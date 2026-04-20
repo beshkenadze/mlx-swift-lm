@@ -4,6 +4,12 @@
 **Branch:** `feat/mlxlm-server`
 **Scope:** Compare third-party DFlash implementations (VoiceInk PR #14, bstnxbt/dflash-mlx, Aryagm/dflash-mlx) to inform our native Swift implementation strategy.
 
+> **Status note (2026-04-20):** Stage 2 is now implemented in `mlx-swift-lm`
+> for the BF16 `mlx-community/Qwen3-4B-bf16` target paired with
+> `z-lab/Qwen3-4B-DFlash-b16`. The OpenAI-compatible server route
+> `dflash:qwen3-4b` is smoke-tested end-to-end, and final usage payloads now
+> include `acceptance_rate` metrics.
+
 ---
 
 ## TL;DR
