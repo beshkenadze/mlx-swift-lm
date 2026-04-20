@@ -131,7 +131,16 @@ fi
 if [[ "$INCLUDE_DFLASH" == "true" ]]; then
     echo
     echo "=== POST /v1/chat/completions (dflash:qwen3-4b) ==="
-    echo "[smoke] NOTE: first DFlash call downloads ~9GB (target + draft). May take several minutes."
+    echo "[smoke] NOTE: first DFlash call downloads ~9GB (target + draft)."
+    echo "[smoke] streaming server log so download progress is visible:"
+    echo "[smoke] -----------------------------------------------------------"
+
+    # Tail the server log in background so the user sees HF download progress,
+    # "dflash model ready" markers, and any load errors while curl waits for
+    # the HTTP response.
+    tail -f -n 0 "$SERVER_LOG" &
+    TAIL_PID=$!
+
     DFLASH_REQ="$LOG_DIR/dflash-request.json"
     cat > "$DFLASH_REQ" <<EOF
 {
@@ -143,10 +152,27 @@ if [[ "$INCLUDE_DFLASH" == "true" ]]; then
   "stream": false
 }
 EOF
-    if curl -sf --max-time 1800 -X POST "http://$HOST:$PORT/v1/chat/completions" \
-            -H "Content-Type: application/json" \
-            --data @"$DFLASH_REQ" \
-            | tee "$CLIENT_LOG.dflash"; then
+    # Drop -s; use -w for timing summary; keep --max-time 1800 (30 min) for
+    # first-run download budget on slow connections.
+    CURL_OK=true
+    curl --max-time 1800 -X POST "http://$HOST:$PORT/v1/chat/completions" \
+         -H "Content-Type: application/json" \
+         --data @"$DFLASH_REQ" \
+         -o "$CLIENT_LOG.dflash" \
+         -w "\n[smoke] http_code=%{http_code} time_total=%{time_total}s download=%{size_download}b\n" \
+         --fail-with-body || CURL_OK=false
+
+    # Stop tailing the server log
+    kill "$TAIL_PID" 2>/dev/null || true
+    wait "$TAIL_PID" 2>/dev/null || true
+
+    echo "[smoke] -----------------------------------------------------------"
+
+    if [[ "$CURL_OK" == "true" ]]; then
+        echo
+        echo "=== response body ==="
+        cat "$CLIENT_LOG.dflash"
+        echo
         echo
         echo "[smoke] dflash PASS"
         echo
