@@ -49,10 +49,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[smoke] building mlx-lm-server (debug)..."
-swift build --product mlx-lm-server 2>&1 | tail -5
+# Use xcodebuild, not `swift build`. SwiftPM-built binaries fail with:
+#   MLX error: Failed to load the default metallib. library not found
+# because mlx-swift's compiled Metal shader library is an Xcode resource
+# bundle that `swift build` does not link. Xcode's resource-bundling does
+# wire it correctly, so we force that path via xcodebuild + a pinned
+# derived-data directory so the binary location is predictable.
+echo "[smoke] building mlx-lm-server via xcodebuild (debug)..."
+DERIVED_DATA="$REPO_ROOT/.build-xcode"
+xcodebuild \
+    -scheme mlx-lm-server \
+    -configuration Debug \
+    -destination 'platform=macOS' \
+    -derivedDataPath "$DERIVED_DATA" \
+    build 2>&1 | tail -5
 
-BIN="$(swift build --show-bin-path)/mlx-lm-server"
+BIN="$DERIVED_DATA/Build/Products/Debug/mlx-lm-server"
 if [[ ! -x "$BIN" ]]; then
     echo "[smoke] ERROR: $BIN not built" >&2
     exit 1
