@@ -118,7 +118,17 @@ public struct DFlashIterator: TokenIteratorProtocol {
             }
         }
 
-        // B1.2 will implement speculation loop here.
+        guard firstStepDone else {
+            return nil
+        }
+
+        runOneSpeculationRound()
+        if pendingIndex < pendingTokens.count {
+            let token = pendingTokens[pendingIndex]
+            pendingIndex += 1
+            emittedCount += 1
+            return token
+        }
         return nil
     }
 
@@ -142,5 +152,112 @@ public struct DFlashIterator: TokenIteratorProtocol {
         pendingIndex = 0
         committedLength = promptTokens.dim(1)
         lastTargetHidden = combinedHidden
+    }
+
+    private mutating func runOneSpeculationRound() {
+        // INVARIANTS after every round:
+        //   committedLength = prompt_len + total_emitted_decode_tokens
+        //   target_cache.offset == committedLength
+        //   draft_cache.offset == committedLength - 1
+        //   lastTargetHidden.shape == [1, acceptance_len + 1, 5*hiddenSize]
+        //
+        // OFF-BY-ONE SPEC:
+        //   block[0] = last_committed_token (already in target_cache from prev round)
+        //   block[1..<16] = mask OR draft proposals
+        //   draft forward uses positions [committedLength..<committedLength+16]
+        //   target verify forward uses positions [committedLength..<committedLength+16]
+        //   BUT: target_cache already has block[0] from previous verify's last position.
+        //        So verify runs block as a fresh 16-token forward; we trim blockSize-(acc_len+1) at end.
+        //   posterior[i] = target's prediction for position (committedLength + i + 1) given [..., block[i]]
+        //   block[1..<16][i] = draft_tokens[i]  (15 proposals)
+        //   Greedy match:
+        //     for i in 0..<15:
+        //       if block[i+1] == posterior[i]: accept += 1; else: break
+        //   Commit: block[1..<1+acc_len] + [posterior[acc_len]]  (bonus)
+        guard firstStepDone,
+            let lastHidden = lastTargetHidden,
+            let lastCommitted = pendingTokens.last
+        else {
+            return
+        }
+
+        var blockIds: [Int32] = [Int32(lastCommitted)]
+        blockIds.append(contentsOf: repeatElement(Int32(maskTokenId), count: blockSize - 1))
+        let initialBlock = MLXArray(blockIds).reshaped([1, blockSize])
+
+        let noiseEmbedding = target.embedTokens(initialBlock)
+        let draftHidden = drafter(
+            noiseEmbedding: noiseEmbedding,
+            targetHidden: lastHidden,
+            caches: draftCache.map { Optional($0) }
+        )
+        let draftLogits = target.applyLMHead(draftHidden[0..., 1..., 0...])
+        let draftTokensArray = argMax(draftLogits, axis: -1).asType(.int32)
+        eval(draftTokensArray)
+
+        let draftToTrim = Swift.max(
+            0,
+            (draftCache.first?.offset ?? committedLength) - committedLength
+        )
+        if draftToTrim > 0 {
+            for cache in draftCache {
+                _ = cache.trim(draftToTrim)
+            }
+        }
+
+        var filled: [Int32] = [Int32(lastCommitted)]
+        for i in 0..<(blockSize - 1) {
+            filled.append(draftTokensArray[0, i].item(Int32.self))
+        }
+        let filledBlock = MLXArray(filled).reshaped([1, blockSize])
+
+        let verifyResult = target.captureHiddenStatesAndLogits(
+            inputs: filledBlock,
+            layerIndices: targetLayerIds,
+            cache: targetCache
+        )
+        let posterior = argMax(verifyResult.logits, axis: -1).asType(.int32)
+        eval(posterior)
+
+        var acceptanceLen = 0
+        for i in 0..<(blockSize - 1) {
+            let draftProposal = filled[i + 1]
+            let targetPrediction = posterior[0, i].item(Int32.self)
+            if draftProposal == targetPrediction {
+                acceptanceLen += 1
+            } else {
+                break
+            }
+        }
+        totalProposed += blockSize - 1
+        totalAccepted += acceptanceLen
+
+        var newTokens: [Int] = []
+        newTokens.reserveCapacity(acceptanceLen + 1)
+        for i in 0..<acceptanceLen {
+            newTokens.append(Int(filled[i + 1]))
+        }
+        let bonus = Int(posterior[0, acceptanceLen].item(Int32.self))
+        newTokens.append(bonus)
+        pendingTokens = newTokens
+        pendingIndex = 0
+
+        let targetExtra = blockSize - (acceptanceLen + 1)
+        if targetExtra > 0 {
+            for cache in targetCache {
+                _ = cache.trim(targetExtra)
+            }
+        }
+        committedLength += acceptanceLen + 1
+
+        let combinedVerifyHidden =
+            if verifyResult.hiddenStates.count == 1 {
+                verifyResult.hiddenStates[0]
+            } else {
+                concatenated(verifyResult.hiddenStates, axis: -1)
+            }
+        let nextHidden = combinedVerifyHidden[0..., 0..<(acceptanceLen + 1), 0...]
+        eval(nextHidden)
+        lastTargetHidden = nextHidden
     }
 }
