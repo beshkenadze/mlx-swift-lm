@@ -29,7 +29,10 @@ struct DFlashIteratorParityTests {
     func testDFlashLosslessAgainstBaselineQwen34B_pending() {
         // Intentional placeholder. Real parity test must live in the
         // integration-testing target where Downloader + TokenizerLoader are
-        // injected, and MLX metallib resolves at runtime.
+        // injected, and MLX metallib resolves at runtime. When that target is
+        // added, keep the shared loading helpers under
+        // `Libraries/IntegrationTestHelpers/` and place the real parity case
+        // next to that integration-only surface.
         //
         // Expected shape of the real test (future):
         //   1. Load target container via LLMModelFactory.shared.loadContainer
@@ -43,9 +46,10 @@ struct DFlashIteratorParityTests {
         Issue.record(
             """
             DFlash lossless parity gate pending integration-test wiring. \
-            Move this test into IntegrationTesting target where downloader + \
-            tokenizer loader are already injected. Drop this placeholder once \
-            the real test lands.
+            Future home: IntegrationTesting target backed by \
+            Libraries/IntegrationTestHelpers/. Move this placeholder there \
+            once the HF-backed parity harness exists and drop the unit-test \
+            stub when the real test lands.
             """)
     }
 }
