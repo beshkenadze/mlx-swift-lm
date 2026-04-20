@@ -10,7 +10,11 @@ final class ChatCompletionsStreamingTests: XCTestCase {
                 ChatDelta(textFragments: ["hello"]),
                 ChatDelta(textFragments: [" "]),
                 ChatDelta(textFragments: ["world"]),
-                ChatDelta(textFragments: [], finishReason: .stop, usage: Usage(promptTokens: 1, completionTokens: 3)),
+                ChatDelta(
+                    textFragments: [],
+                    finishReason: .stop,
+                    usage: Usage(promptTokens: 1, completionTokens: 3, acceptanceRate: 0.75)
+                ),
             ]
         )
         let server = MLXLMHTTPServer(engine: engine, host: "127.0.0.1", port: 0)
@@ -41,6 +45,7 @@ final class ChatCompletionsStreamingTests: XCTestCase {
         XCTAssertEqual(dataLines.last, "data: [DONE]")
 
         let contentChunks = dataLines.dropLast()    // drop [DONE]
+        var finalUsage: [String: Any]?
         let reconstructed = contentChunks.compactMap { line -> String? in
             let jsonStart = line.index(line.startIndex, offsetBy: "data: ".count)
             let data = Data(line[jsonStart...].utf8)
@@ -48,9 +53,13 @@ final class ChatCompletionsStreamingTests: XCTestCase {
                   let choices = obj["choices"] as? [[String: Any]],
                   let delta = choices.first?["delta"] as? [String: Any]
             else { return nil }
+            if let usage = obj["usage"] as? [String: Any] {
+                finalUsage = usage
+            }
             return delta["content"] as? String
         }.joined()
         XCTAssertEqual(reconstructed, "hello world")
+        XCTAssertEqual(finalUsage?["acceptance_rate"] as? Double, 0.75)
     }
 }
 

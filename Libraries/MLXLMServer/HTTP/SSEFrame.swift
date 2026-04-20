@@ -21,7 +21,8 @@ public enum SSEFrame {
         created: Int,
         contentDelta: String?,
         finishReason: String?,
-        includeAssistantRole: Bool = false
+        includeAssistantRole: Bool = false,
+        usage: Usage? = nil
     ) -> String {
         var delta: [String: Any] = [:]
         if includeAssistantRole { delta["role"] = "assistant" }
@@ -33,16 +34,31 @@ public enum SSEFrame {
         ]
         choice["finish_reason"] = finishReason as Any? ?? NSNull()
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "id": id,
             "object": "chat.completion.chunk",
             "created": created,
             "model": model,
             "choices": [choice],
         ]
+        if let usage {
+            payload["usage"] = usagePayload(usage)
+        }
 
         let encoded = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
         let json = String(data: encoded, encoding: .utf8) ?? "{}"
         return data(json)
+    }
+
+    private static func usagePayload(_ usage: Usage) -> [String: Any] {
+        var payload: [String: Any] = [
+            "prompt_tokens": usage.promptTokens,
+            "completion_tokens": usage.completionTokens,
+            "total_tokens": usage.totalTokens,
+        ]
+        if let acceptanceRate = usage.acceptanceRate {
+            payload["acceptance_rate"] = acceptanceRate
+        }
+        return payload
     }
 }

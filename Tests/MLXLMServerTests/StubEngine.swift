@@ -7,15 +7,18 @@ public struct StubEngine: InferenceEngine {
     public let models: [ModelInfo]
     public let healthReady: Bool
     public let cannedResponse: String
+    public let usage: Usage
 
     public init(
         models: [ModelInfo] = [ModelInfo(id: "stub-model", created: 0, ownedBy: "tests")],
         healthReady: Bool = true,
-        cannedResponse: String = "hello from stub"
+        cannedResponse: String = "hello from stub",
+        usage: Usage = Usage(promptTokens: 0, completionTokens: 1)
     ) {
         self.models = models
         self.healthReady = healthReady
         self.cannedResponse = cannedResponse
+        self.usage = usage
     }
 
     public func availableModels() async -> [ModelInfo] {
@@ -36,7 +39,7 @@ public struct StubEngine: InferenceEngine {
                 ChatDelta(
                     textFragments: [cannedResponse],
                     finishReason: .stop,
-                    usage: Usage(promptTokens: 0, completionTokens: 1)
+                    usage: usage
                 )
             )
             continuation.finish()

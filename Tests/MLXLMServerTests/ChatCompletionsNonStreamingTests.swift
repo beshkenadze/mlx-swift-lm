@@ -4,7 +4,10 @@ import XCTest
 
 final class ChatCompletionsNonStreamingTests: XCTestCase {
     func testNonStreamingCompletion() async throws {
-        let engine = StubEngine(cannedResponse: "stub says hi")
+        let engine = StubEngine(
+            cannedResponse: "stub says hi",
+            usage: Usage(promptTokens: 2, completionTokens: 1, acceptanceRate: 0.875)
+        )
         let server = MLXLMHTTPServer(engine: engine, host: "127.0.0.1", port: 0)
         let (_, port) = try server.bindAndRun()
         defer { try? server.stop() }
@@ -35,6 +38,9 @@ final class ChatCompletionsNonStreamingTests: XCTestCase {
 
         let usage = try XCTUnwrap(payload["usage"] as? [String: Any])
         XCTAssertEqual(usage["completion_tokens"] as? Int, 1)
+        XCTAssertEqual(usage["prompt_tokens"] as? Int, 2)
+        XCTAssertEqual(usage["total_tokens"] as? Int, 3)
+        XCTAssertEqual(usage["acceptance_rate"] as? Double, 0.875)
     }
 
     func testMalformedBodyReturns400() async throws {

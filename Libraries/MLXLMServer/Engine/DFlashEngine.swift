@@ -149,10 +149,15 @@ public final class DFlashEngine: InferenceEngine, @unchecked Sendable {
                             finishReason = .length
                         }
 
+                        let acceptanceRate =
+                            iterator.totalProposed > 0 ? iterator.acceptanceRate : nil
+                        log(
+                            "dflash usage: prompt=\(promptTokens.dim(1)) completion=\(iterator.tokenCount) acceptanceRate=\(iterator.acceptanceRate) totalProposed=\(iterator.totalProposed) totalAccepted=\(iterator.totalAccepted)"
+                        )
                         let usage = Usage(
                             promptTokens: promptTokens.dim(1),
                             completionTokens: iterator.tokenCount,
-                            acceptanceRate: iterator.acceptanceRate
+                            acceptanceRate: acceptanceRate
                         )
 
                         if request.stream {

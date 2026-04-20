@@ -74,6 +74,12 @@ public struct Usage: Sendable, Codable, Equatable {
         self.completionTokens = completionTokens
         self.acceptanceRate = acceptanceRate
     }
+
+    enum CodingKeys: String, CodingKey {
+        case promptTokens = "prompt_tokens"
+        case completionTokens = "completion_tokens"
+        case acceptanceRate = "acceptance_rate"
+    }
 }
 
 /// One chunk of generated output. An engine may emit one delta per token

@@ -261,6 +261,7 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
 
                 var firstChunkEmitted = false
                 var streamFinishReason: FinishReason?
+                var streamUsage: Usage?
                 let heartbeatIntervalSeconds = self.heartbeatInterval
                 do {
                     let events = Self.mergeDeltasWithHeartbeat(
@@ -293,6 +294,7 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                                 }
                             }
                             if let reason = delta.finishReason { streamFinishReason = reason }
+                            if let usage = delta.usage { streamUsage = usage }
                         }
                     }
                 } catch {
@@ -305,7 +307,8 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                     created: createdTs,
                     contentDelta: nil,
                     finishReason: (streamFinishReason ?? .stop).rawValue,
-                    includeAssistantRole: false
+                    includeAssistantRole: false,
+                    usage: streamUsage
                 )
                 eventLoop.execute {
                     self.writeSSEFrame(context: contextBox.value, frame: finalFrame)
@@ -357,11 +360,15 @@ final class MLXLMHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
                 "choices": [choice],
             ]
             if let usage {
-                payload["usage"] = [
+                var usagePayload: [String: Any] = [
                     "prompt_tokens": usage.promptTokens,
                     "completion_tokens": usage.completionTokens,
                     "total_tokens": usage.totalTokens,
                 ]
+                if let acceptanceRate = usage.acceptanceRate {
+                    usagePayload["acceptance_rate"] = acceptanceRate
+                }
+                payload["usage"] = usagePayload
             }
             let encoded = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
             let json = String(data: encoded, encoding: .utf8) ?? "{}"

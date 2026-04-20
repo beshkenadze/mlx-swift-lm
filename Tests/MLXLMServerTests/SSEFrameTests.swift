@@ -38,7 +38,8 @@ final class SSEFrameTests: XCTestCase {
             model: "m",
             created: 42,
             contentDelta: nil,
-            finishReason: "stop"
+            finishReason: "stop",
+            usage: Usage(promptTokens: 2, completionTokens: 3, acceptanceRate: 0.8)
         )
         let jsonStart = chunk.index(chunk.startIndex, offsetBy: "data: ".count)
         let jsonEnd = chunk.index(chunk.endIndex, offsetBy: -2)
@@ -49,5 +50,8 @@ final class SSEFrameTests: XCTestCase {
         XCTAssertEqual(choices[0]["finish_reason"] as? String, "stop")
         let delta = choices[0]["delta"] as! [String: Any]
         XCTAssertTrue(delta.isEmpty)
+        let usage = obj["usage"] as! [String: Any]
+        XCTAssertEqual(usage["acceptance_rate"] as? Double, 0.8)
+        XCTAssertEqual(usage["total_tokens"] as? Int, 5)
     }
 }
