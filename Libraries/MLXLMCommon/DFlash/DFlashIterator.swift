@@ -48,6 +48,7 @@ public struct DFlashIterator: TokenIteratorProtocol {
     var pendingIndex: Int
     var emittedCount: Int
     var firstStepDone: Bool
+    var isTerminated: Bool
 
     public private(set) var totalProposed: Int = 0
     public private(set) var totalAccepted: Int = 0
@@ -90,6 +91,7 @@ public struct DFlashIterator: TokenIteratorProtocol {
         self.pendingIndex = 0
         self.emittedCount = 0
         self.firstStepDone = false
+        self.isTerminated = false
     }
 
     public mutating func next() -> Int? {
@@ -116,6 +118,10 @@ public struct DFlashIterator: TokenIteratorProtocol {
                 emittedCount += 1
                 return token
             }
+        }
+
+        if isTerminated {
+            return nil
         }
 
         guard firstStepDone else {
@@ -152,16 +158,20 @@ public struct DFlashIterator: TokenIteratorProtocol {
         pendingIndex = 0
         committedLength = promptTokens.dim(1)
         lastTargetHidden = combinedHidden
+        if stopTokenIds.contains(firstToken) {
+            isTerminated = true
+        }
     }
 
     private mutating func runOneSpeculationRound() {
         // INVARIANTS after every round:
         //   committedLength = prompt_len + total_emitted_decode_tokens
         //   target_cache.offset == committedLength
-        //   draft_cache.offset == committedLength - (acceptanceLen + 1)
+        //   committedCount = pendingTokens.count
+        //   draft_cache.offset == committedLength - committedCount
         //                      == committedLength - lastTargetHidden.shape[1]
         //                      == previous round's committedLength
-        //   lastTargetHidden.shape == [1, acceptanceLen + 1, sum_of_target_layer_hidden_sizes]
+        //   lastTargetHidden.shape == [1, committedCount, sum_of_target_layer_hidden_sizes]
         //
         // The draft cache intentionally lags behind committedLength by (acceptanceLen+1).
         // DFlash's drafter re-receives accepted context each round via `targetHidden` (a slice
@@ -236,7 +246,6 @@ public struct DFlashIterator: TokenIteratorProtocol {
             }
         }
         totalProposed += blockSize - 1
-        totalAccepted += acceptanceLen
 
         var newTokens: [Int] = []
         newTokens.reserveCapacity(acceptanceLen + 1)
@@ -245,16 +254,29 @@ public struct DFlashIterator: TokenIteratorProtocol {
         }
         let bonus = Int(posterior[0, acceptanceLen].item(Int32.self))
         newTokens.append(bonus)
+        if let stopIndex = newTokens.firstIndex(where: { stopTokenIds.contains($0) }) {
+            newTokens.removeSubrange((stopIndex + 1)...)
+            isTerminated = true
+        }
+        if let maxTokens {
+            let remainingBudget = maxTokens - emittedCount
+            if newTokens.count > remainingBudget {
+                newTokens.removeSubrange(remainingBudget...)
+            }
+        }
+        let committedCount = newTokens.count
+        let committedAccepted = Swift.min(acceptanceLen, committedCount)
+        totalAccepted += committedAccepted
         pendingTokens = newTokens
         pendingIndex = 0
 
-        let targetExtra = blockSize - (acceptanceLen + 1)
+        let targetExtra = blockSize - committedCount
         if targetExtra > 0 {
             for cache in targetCache {
                 _ = cache.trim(targetExtra)
             }
         }
-        committedLength += acceptanceLen + 1
+        committedLength += committedCount
 
         let combinedVerifyHidden =
             if verifyResult.hiddenStates.count == 1 {
@@ -262,7 +284,7 @@ public struct DFlashIterator: TokenIteratorProtocol {
             } else {
                 concatenated(verifyResult.hiddenStates, axis: -1)
             }
-        let nextHidden = combinedVerifyHidden[0..., 0..<(acceptanceLen + 1), 0...]
+        let nextHidden = combinedVerifyHidden[0..., 0..<committedCount, 0...]
         eval(nextHidden)
         lastTargetHidden = nextHidden
     }

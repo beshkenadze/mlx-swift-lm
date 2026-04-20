@@ -137,10 +137,12 @@ struct DFlashIteratorSpecRoundTests {
         }
     }
 
-    private func makeIterator(
+    func makeIterator(
         proposals: [Int32],
         posterior: [Int32],
-        firstPrefillToken: Int32 = 3
+        firstPrefillToken: Int32 = 3,
+        stopTokenIds: Set<Int> = [],
+        maxTokens: Int? = nil
     ) throws -> DFlashIterator {
         let target = SyntheticTargetModel(
             hiddenSize: hiddenSize,
@@ -159,7 +161,9 @@ struct DFlashIteratorSpecRoundTests {
             promptTokens: promptTokens,
             target: target,
             drafter: drafter,
-            draftConfig: draftConfig
+            draftConfig: draftConfig,
+            stopTokenIds: stopTokenIds,
+            maxTokens: maxTokens
         )
     }
 
