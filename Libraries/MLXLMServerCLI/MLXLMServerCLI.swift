@@ -79,7 +79,7 @@ struct MLXLMServerCLI {
         FileHandle.standardError.write(
             Data("listening on http://\(host):\(port)  (Ctrl-C to stop)\n".utf8)
         )
-        try server.run()
+        try await server.run()
     }
 
     static func printUsage() {

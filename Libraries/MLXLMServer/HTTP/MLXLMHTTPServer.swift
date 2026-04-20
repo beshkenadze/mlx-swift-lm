@@ -56,9 +56,15 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
         self.eventLoopGroup = MultiThreadedEventLoopGroup(numberOfThreads: numberOfThreads)
     }
 
-    /// Bind and block until the server is stopped. Call `stop()` from
-    /// another task to terminate.
-    public func run() throws {
+    /// Bind and wait asynchronously until the server is stopped.
+    ///
+    /// Call `stop()` from another task to terminate. This variant yields
+    /// the current executor (typically the main actor) while waiting for
+    /// the channel to close, so `@MainActor`-isolated work scheduled by
+    /// downstream engines (e.g. `HubClient` download progress callbacks
+    /// that require `@MainActor @Sendable`) can run to completion instead
+    /// of deadlocking against a thread-blocking `NIO.EventLoopFuture.wait()`.
+    public func run() async throws {
         let engine = self.engine
         let gate = self.gate
         let healthResponder = self.healthResponder
@@ -84,9 +90,9 @@ public final class MLXLMHTTPServer: @unchecked Sendable {
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
 
-        let channel = try bootstrap.bind(host: host, port: port).wait()
+        let channel = try await bootstrap.bind(host: host, port: port).get()
         self.boundChannel = channel
-        try channel.closeFuture.wait()
+        try await channel.closeFuture.get()
     }
 
     /// Bind and return a port assigned by the OS. Useful when `port: 0` is
