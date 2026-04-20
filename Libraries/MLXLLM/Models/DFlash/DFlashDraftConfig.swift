@@ -1,6 +1,7 @@
 // Copyright © 2026 Apple Inc.
 
 import Foundation
+import MLXLMCommon
 
 public struct DFlashDraftConfig: Sendable, Codable {
     public let modelType: String
@@ -110,4 +111,9 @@ public struct DFlashDraftConfig: Sendable, Codable {
             case targetLayerIds = "target_layer_ids"
         }
     }
+}
+
+extension DFlashDraftConfig: DFlashDraftConfiguration {
+    public var maskTokenId: Int { dflashConfig.maskTokenId }
+    public var targetLayerIds: [Int] { dflashConfig.targetLayerIds }
 }

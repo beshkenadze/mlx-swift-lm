@@ -116,3 +116,7 @@ public final class DFlashDraftModel: Module {
         return norm(hidden)
     }
 }
+
+extension DFlashDraftModel: DFlashDraftingModel {
+    public var numDraftLayers: Int { config.numHiddenLayers }
+}

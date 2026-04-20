@@ -43,6 +43,8 @@ let dflashMetallibAvailable: Bool = {
     return false
 }()
 
+let dflashHFTestsEnabled: Bool = ProcessInfo.processInfo.environment["DFLASH_TEST_HF"] != nil
+
 func makeTestDFlashConfig() -> DFlashDraftConfig {
     DFlashDraftConfig(
         modelType: "qwen3",

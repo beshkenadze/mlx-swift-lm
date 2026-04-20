@@ -4,8 +4,6 @@ import Foundation
 import MLXLLM
 import Testing
 
-private let dflashHFTestsEnabled = ProcessInfo.processInfo.environment["DFLASH_TEST_HF"] != nil
-
 struct DFlashWeightLoaderTests {
 
     @Test(
