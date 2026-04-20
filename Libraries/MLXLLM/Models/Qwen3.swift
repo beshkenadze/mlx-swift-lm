@@ -288,6 +288,17 @@ public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider {
         return out
     }
 
+    public func embedTokens(_ inputs: MLXArray) -> MLXArray {
+        model.embedTokens(inputs)
+    }
+
+    public func applyLMHead(_ hidden: MLXArray) -> MLXArray {
+        if let lmHead {
+            return lmHead(hidden)
+        }
+        return model.embedTokens.asLinear(hidden)
+    }
+
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var weights = weights
 
@@ -360,6 +371,8 @@ public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider {
         model.embedTokens.weight
     }
 }
+
+extension Qwen3Model: DFlashTargetModel {}
 
 public struct Qwen3Configuration: Codable, Sendable {
     var hiddenSize: Int
