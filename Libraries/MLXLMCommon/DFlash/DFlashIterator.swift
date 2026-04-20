@@ -158,8 +158,14 @@ public struct DFlashIterator: TokenIteratorProtocol {
         // INVARIANTS after every round:
         //   committedLength = prompt_len + total_emitted_decode_tokens
         //   target_cache.offset == committedLength
-        //   draft_cache.offset == committedLength - 1
-        //   lastTargetHidden.shape == [1, acceptance_len + 1, 5*hiddenSize]
+        //   draft_cache.offset == committedLength - (acceptanceLen + 1)
+        //                      == committedLength - lastTargetHidden.shape[1]
+        //                      == previous round's committedLength
+        //   lastTargetHidden.shape == [1, acceptanceLen + 1, sum_of_target_layer_hidden_sizes]
+        //
+        // The draft cache intentionally lags behind committedLength by (acceptanceLen+1).
+        // DFlash's drafter re-receives accepted context each round via `targetHidden` (a slice
+        // of the verify hidden states), not via its own KV cache. Mirrors HF `crop(start)` semantics.
         //
         // OFF-BY-ONE SPEC:
         //   block[0] = last_committed_token (already in target_cache from prev round)

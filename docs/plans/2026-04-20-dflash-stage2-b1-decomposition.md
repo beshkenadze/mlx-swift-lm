@@ -233,8 +233,16 @@ public struct DFlashIterator: TokenIteratorProtocol {
 INVARIANTS after every round:
   committedLength = prompt_len + total_emitted_decode_tokens
   target_cache.offset == committedLength
-  draft_cache.offset == committedLength - 1    (draft sees accepted tokens except last; see why below)
+  draft_cache.offset == committedLength - (acceptanceLen + 1)
+                     == committedLength - lastTargetHidden.shape[1]
+                     == previous round's committedLength
   lastTargetHidden.shape == [1, acceptance_len + 1, 5*hiddenSize]
+
+NOTE on draft_cache lag: the drafter does NOT reconcile accepted context through its
+own KV cache. It receives committed context each round via `targetHidden` (a slice of
+the verify hidden states). The draft cache only records the noise-token forward from
+the previous round, cropped back to the pre-round committedLength. Mirrors HF's
+`past_key_values_draft.crop(start)` semantics exactly.
 
 OFF-BY-ONE SPEC:
   block[0] = last_committed_token (already in target_cache from prev round)
