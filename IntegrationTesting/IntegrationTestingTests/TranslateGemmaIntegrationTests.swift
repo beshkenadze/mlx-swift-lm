@@ -22,4 +22,11 @@ struct TranslateGemmaIntegrationTests {
         let container = try await models.translateGemmaContainer()
         try await ChatSessionTests.translation(container: container)
     }
+
+    /// Fuller check: translate a WMT14 sample set (longer sentences, en->fr/de/ru) and
+    /// score each output against the human reference with chrF.
+    @Test func translateGemma4bDataset() async throws {
+        let container = try await models.translateGemmaContainer()
+        try await ChatSessionTests.translationDataset(container: container)
+    }
 }

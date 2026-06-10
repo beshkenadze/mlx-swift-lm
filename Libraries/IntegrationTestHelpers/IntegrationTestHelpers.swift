@@ -300,12 +300,54 @@ public enum ChatSessionTests {
             chat: [.user("Hello, how are you?")],
             additionalContext: ["source_lang_code": "en", "target_lang_code": "fr"]
         )
-        let result = try await container.perform(nonSendable: input) { context, input in
+        let result = try await translate(container: container, input: input, label: "Translation")
+        let lowered = result.lowercased()
+        try check(
+            lowered.contains("bonjour") || lowered.contains("comment"),
+            "Expected a French translation (e.g. 'Bonjour'/'comment'), got: \(result)"
+        )
+    }
+
+    /// Translate a WMT14 newstest sample set and score each output against the human
+    /// reference with chrF. Exercises longer, varied sentences across several language
+    /// pairs (en->fr/de/ru) instead of a single short phrase.
+    public static func translationDataset(container: LMModelContainer) async throws {
+        var scores: [Double] = []
+        for sample in wmt14TranslationSamples {
+            let input = UserInput(
+                chat: [.user(sample.source)],
+                additionalContext: [
+                    "source_lang_code": sample.sourceLang,
+                    "target_lang_code": sample.targetLang,
+                ]
+            )
+            let output = try await translate(
+                container: container, input: input,
+                label: "\(sample.sourceLang)->\(sample.targetLang)")
+            let score = chrF(hypothesis: output, reference: sample.reference)
+            scores.append(score)
+            print(String(format: "  chrF=%.3f", score))
+            try check(
+                score >= 0.30,
+                "Low chrF (\(String(format: "%.3f", score))) for "
+                    + "\(sample.sourceLang)->\(sample.targetLang): \(output)"
+            )
+        }
+        let mean = scores.reduce(0, +) / Double(scores.count)
+        print(String(format: "Mean chrF: %.3f over %d samples", mean, scores.count))
+        try check(mean >= 0.45, "Mean chrF \(String(format: "%.3f", mean)) below 0.45")
+    }
+
+    /// Shared greedy translation: build the prompt, generate, collect the text.
+    private static func translate(
+        container: LMModelContainer, input: UserInput, label: String
+    ) async throws -> String {
+        try await container.perform(nonSendable: input) { context, input in
             let lmInput = try await context.processor.prepare(input: input)
             let stream = try generate(
                 input: lmInput, parameters: generateParameters, context: context)
             var text = ""
-            print("Translation: ", terminator: "")
+            print("\(label): ", terminator: "")
             for try await generation in stream {
                 if case .chunk(let chunk) = generation {
                     print(chunk, terminator: "")
@@ -315,11 +357,6 @@ public enum ChatSessionTests {
             print()
             return text
         }
-        let lowered = result.lowercased()
-        try check(
-            lowered.contains("bonjour") || lowered.contains("comment"),
-            "Expected a French translation (e.g. 'Bonjour'/'comment'), got: \(result)"
-        )
     }
 
     public static func visionModel(container: LMModelContainer) async throws {
@@ -441,6 +478,114 @@ public enum ChatSessionTests {
             "Expected 'Bob' in response (prompt rehydration), got: \(response)"
         )
     }
+}
+
+// MARK: - Translation Dataset & Metric
+
+/// One source sentence + human reference translation, with ISO 639-1 language codes.
+public struct TranslationSample: Sendable {
+    public let sourceLang: String
+    public let targetLang: String
+    public let source: String
+    public let reference: String
+}
+
+/// Sentence pairs from the WMT14 news translation task (newstest2014).
+/// Source: ACL 2014 Ninth Workshop on Statistical Machine Translation
+/// (https://www.statmt.org/wmt14/), via `wmt/wmt14` on the Hugging Face Hub.
+public let wmt14TranslationSamples: [TranslationSample] = [
+    .init(
+        sourceLang: "en", targetLang: "fr",
+        source:
+            #"Sportsman Jhonathan Florez jumped from a helicopter above Bogota, the capital of Colombia, on Thursday."#,
+        reference:
+            #"Le sportif Jhonathan Florez a sauté jeudi d'un hélicoptère au-dessus de Bogota, la capitale colombienne."#
+    ),
+    .init(
+        sourceLang: "en", targetLang: "fr",
+        source:
+            #"The usually dull arena of highway planning has suddenly spawned intense debate and colorful alliances."#,
+        reference:
+            #"Le secteur généralement sans intérêt de la planification des grands axes a soudain provoqué un débat fort animé et des alliances mouvementées."#
+    ),
+    .init(
+        sourceLang: "en", targetLang: "fr",
+        source:
+            #"The American Civil Liberties Union is deeply concerned, too, raising a variety of privacy issues."#,
+        reference:
+            #"L'American Civil Liberties Union est elle aussi très préoccupée et exprime son inquiétude concernant la protection de la vie privée."#
+    ),
+    .init(
+        sourceLang: "en", targetLang: "de",
+        source:
+            #"Two sets of lights so close to one another: intentional or just a silly error?"#,
+        reference: #"Zwei Anlagen so nah beieinander: Absicht oder Schildbürgerstreich?"#
+    ),
+    .init(
+        sourceLang: "en", targetLang: "de",
+        source: #"Yesterday, Gutacht's Mayor gave a clear answer to this question."#,
+        reference: #"Diese Frage hat Gutachs Bürgermeister gestern klar beantwortet."#
+    ),
+    .init(
+        sourceLang: "en", targetLang: "de",
+        source:
+            #""At the time, the Town Hall traffic lights were installed because this was a school route," explained Eckert yesterday."#,
+        reference:
+            #""Die Rathausampel ist damals installiert worden, weil diese den Schulweg sichert", erläuterte Eckert gestern."#
+    ),
+    .init(
+        sourceLang: "en", targetLang: "ru",
+        source: #"One of the hanged men had previously attempted suicide."#,
+        reference: #"Ранее один из повешенных уже совершал попытку суицида."#
+    ),
+    .init(
+        sourceLang: "en", targetLang: "ru",
+        source:
+            #"On October 30th around 1:00 in the village of Lugovoye, a man born in 1947 committed suicide by hanging himself at his home."#,
+        reference:
+            #"30 октября, около 1-00, в деревне Луговое по месту своего жительства мужчина 1947 года рождения совершил самоубийство через повешение."#
+    ),
+]
+
+/// Character n-gram F-score (chrF, Popović 2015), a standard reference-based MT metric.
+/// Averages character n-gram precision and recall over orders `1...maxN`, then combines
+/// them with an F-beta score (beta=2 weights recall, matching chrF2). Range 0...1.
+public func chrF(hypothesis: String, reference: String, maxN: Int = 6, beta: Double = 2) -> Double {
+    func ngramCounts(_ chars: [Character], _ n: Int) -> [ArraySlice<Character>: Int] {
+        guard chars.count >= n else { return [:] }
+        var counts: [ArraySlice<Character>: Int] = [:]
+        for i in 0 ... (chars.count - n) {
+            counts[chars[i ..< i + n], default: 0] += 1
+        }
+        return counts
+    }
+
+    let hypChars = Array(hypothesis.lowercased())
+    let refChars = Array(reference.lowercased())
+
+    var sumPrecision = 0.0
+    var sumRecall = 0.0
+    var orders = 0
+    for n in 1 ... maxN {
+        let hyp = ngramCounts(hypChars, n)
+        let ref = ngramCounts(refChars, n)
+        if hyp.isEmpty && ref.isEmpty { continue }
+        var matches = 0
+        for (gram, count) in hyp {
+            matches += min(count, ref[gram] ?? 0)
+        }
+        let hypTotal = hyp.values.reduce(0, +)
+        let refTotal = ref.values.reduce(0, +)
+        sumPrecision += hypTotal > 0 ? Double(matches) / Double(hypTotal) : 0
+        sumRecall += refTotal > 0 ? Double(matches) / Double(refTotal) : 0
+        orders += 1
+    }
+    guard orders > 0 else { return 0 }
+    let precision = sumPrecision / Double(orders)
+    let recall = sumRecall / Double(orders)
+    let beta2 = beta * beta
+    let denominator = beta2 * precision + recall
+    return denominator > 0 ? (1 + beta2) * precision * recall / denominator : 0
 }
 
 // MARK: - Stream Helper
