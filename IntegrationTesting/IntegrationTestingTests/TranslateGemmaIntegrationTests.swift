@@ -29,4 +29,11 @@ struct TranslateGemmaIntegrationTests {
         let container = try await models.translateGemmaContainer()
         try await ChatSessionTests.translationDataset(container: container)
     }
+
+    /// Latency: prefill the constant translation-instruction prefix once and reuse the KV
+    /// cache across requests; verify identical output and measure TTFT before/after.
+    @Test func translateGemma4bPrefixCacheBenchmark() async throws {
+        let container = try await models.translateGemmaContainer()
+        try await ChatSessionTests.translationPrefixCacheBenchmark(container: container)
+    }
 }

@@ -338,6 +338,126 @@ public enum ChatSessionTests {
         try check(mean >= 0.45, "Mean chrF \(String(format: "%.3f", mean)) below 0.45")
     }
 
+    /// Prefix-KV-cache benchmark for low-latency translation.
+    ///
+    /// TranslateGemma's chat template prepends a long *constant* instruction prefix
+    /// ("You are a professional <src> to <tgt> translator. ... Please translate ...:") that
+    /// must be prefilled before the first output token. For a fixed language pair that prefix
+    /// is identical across requests — only the user text (at the end) changes. We prefill it
+    /// once, then `copy()` the KV cache per request and feed only the variable suffix, cutting
+    /// time-to-first-token (TTFT). This verifies the cached output is identical to a full
+    /// prefill (greedy) and reports TTFT before/after.
+    public static func translationPrefixCacheBenchmark(container: LMModelContainer) async throws {
+        let src = "en"
+        let tgt = "fr"
+        let texts =
+            wmt14TranslationSamples.filter { $0.targetLang == tgt }.map(\.source)
+            + [
+                "The weather today is sunny with a gentle breeze from the west.",
+                "Please send me the quarterly report before tomorrow morning.",
+            ]
+
+        try await container.perform { context in
+            let model = context.model
+            let params = GenerateParameters(maxTokens: 48, temperature: 0)
+
+            func renderTokens(_ text: String) async throws -> [Int32] {
+                let userInput = UserInput(
+                    chat: [.user(text)],
+                    additionalContext: ["source_lang_code": src, "target_lang_code": tgt])
+                let prepared = try await context.processor.prepare(input: userInput)
+                return prepared.text.tokens.asArray(Int32.self)
+            }
+
+            // Length of the constant instruction prefix = longest common token prefix of two
+            // different same-pair prompts.
+            let probeA = try await renderTokens(texts[0])
+            let probeB = try await renderTokens(texts[1] + " (a clearly different sentence)")
+            var prefixLength = 0
+            while prefixLength < probeA.count, prefixLength < probeB.count,
+                probeA[prefixLength] == probeB[prefixLength]
+            {
+                prefixLength += 1
+            }
+            let prefixTokens = Array(probeA[0 ..< prefixLength])
+
+            func generateText(fullTokens: [Int32], cache: [KVCache]) async throws -> (
+                ttftMs: Double, text: String
+            ) {
+                let clock = ContinuousClock()
+                let start = clock.now
+                var ttft: Duration?
+                var text = ""
+                // generate adds the batch dim internally (`tokens[.newAxis]`), so pass 1-D.
+                let stream = try generate(
+                    input: LMInput(tokens: MLXArray(fullTokens)),
+                    cache: cache, parameters: params, context: context)
+                for await generation in stream {
+                    if case .chunk(let chunk) = generation {
+                        if ttft == nil { ttft = clock.now - start }
+                        text += chunk
+                    }
+                }
+                return (durationMilliseconds(ttft ?? (clock.now - start)), text)
+            }
+
+            // Warm up Metal kernels so the first measured call isn't penalized.
+            _ = try await generateText(
+                fullTokens: probeA, cache: model.newCache(parameters: params))
+
+            // Build the reusable prefix cache: run one full prompt through the normal generate
+            // path, then trim the cache back to just the constant instruction prefix. Causal
+            // attention means those prefix K/V are independent of the trailing tokens, so the
+            // trimmed cache is exactly what a prefix-only prefill would produce.
+            let prefixCache = model.newCache(parameters: params)
+            _ = try await generateText(fullTokens: probeA, cache: prefixCache)
+            let trimCount = (prefixCache.first?.offset ?? 0) - prefixLength
+            if trimCount > 0 {
+                _ = trimPromptCache(prefixCache, numTokens: trimCount)
+            }
+
+            var baseline: [Double] = []
+            var cached: [Double] = []
+            for text in texts {
+                let full = try await renderTokens(text)
+                try check(
+                    Array(full[0 ..< prefixLength]) == prefixTokens,
+                    "Constant prefix did not match for: \(text)")
+
+                let base = try await generateText(
+                    fullTokens: full, cache: model.newCache(parameters: params))
+                let reuse = try await generateText(
+                    fullTokens: Array(full[prefixLength...]),
+                    cache: prefixCache.map { $0.copy() })
+
+                try check(
+                    base.text == reuse.text,
+                    "Prefix-cache output diverged from full prefill.\n  base:  \(base.text)\n  cache: \(reuse.text)"
+                )
+                baseline.append(base.ttftMs)
+                cached.append(reuse.ttftMs)
+                print(
+                    String(
+                        format: "  TTFT base=%.1fms cached=%.1fms | %@", base.ttftMs, reuse.ttftMs,
+                        String(reuse.text.prefix(48))))
+            }
+
+            let meanBase = baseline.reduce(0, +) / Double(baseline.count)
+            let meanCached = cached.reduce(0, +) / Double(cached.count)
+            print("Prefix length: \(prefixLength) tokens")
+            print(
+                String(
+                    format: "Mean TTFT: baseline %.1f ms  cached %.1f ms  (%.0f%% faster)",
+                    meanBase, meanCached, (1 - meanCached / meanBase) * 100))
+
+            // Reusing the prefilled prefix must not be slower than a full prefill.
+            try check(
+                meanCached <= meanBase * 1.05,
+                "Prefix cache did not reduce TTFT (baseline \(meanBase) ms, cached \(meanCached) ms)"
+            )
+        }
+    }
+
     /// Shared greedy translation: build the prompt, generate, collect the text.
     private static func translate(
         container: LMModelContainer, input: UserInput, label: String
@@ -586,6 +706,12 @@ public func chrF(hypothesis: String, reference: String, maxN: Int = 6, beta: Dou
     let beta2 = beta * beta
     let denominator = beta2 * precision + recall
     return denominator > 0 ? (1 + beta2) * precision * recall / denominator : 0
+}
+
+/// Converts a `Duration` to milliseconds.
+func durationMilliseconds(_ duration: Duration) -> Double {
+    let (seconds, attoseconds) = duration.components
+    return Double(seconds) * 1000 + Double(attoseconds) / 1_000_000_000_000_000
 }
 
 // MARK: - Stream Helper
