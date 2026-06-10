@@ -38,6 +38,7 @@ public enum IntegrationTestModelIDs {
     public static let mistral3 = "mlx-community/Ministral-3-3B-Instruct-2512-4bit"
     public static let nemotron = "mlx-community/NVIDIA-Nemotron-3-Nano-30B-A3B-4bit"
     public static let qwen35 = "mlx-community/Qwen3.5-2B-4bit"
+    public static let translateGemma = "mlx-community/translategemma-4b-it-4bit"
 }
 
 // MARK: - Model Loading
@@ -54,6 +55,7 @@ public actor IntegrationTestModels {
     private var mistral3Task: Task<LMModelContainer, Error>?
     private var nemotronTask: Task<LMModelContainer, Error>?
     private var qwen35Task: Task<LMModelContainer, Error>?
+    private var translateGemmaTask: Task<LMModelContainer, Error>?
 
     public init(downloader: any Downloader, tokenizerLoader: any TokenizerLoader) {
         self.downloader = downloader
@@ -207,6 +209,28 @@ public actor IntegrationTestModels {
         return try await task.value
     }
 
+    public func translateGemmaContainer() async throws -> LMModelContainer {
+        if let task = translateGemmaTask {
+            return try await task.value
+        }
+        let downloader = self.downloader
+        let tokenizerLoader = self.tokenizerLoader
+        let id = IntegrationTestModelIDs.translateGemma
+        let task = Task {
+            print("Loading TranslateGemma: \(id)")
+            let container = try await LLMModelFactory.shared.loadContainer(
+                from: downloader, using: tokenizerLoader,
+                // Gemma chat turns end with <end_of_turn>; required to stop generation cleanly.
+                configuration: .init(id: id, extraEOSTokens: ["<end_of_turn>"]),
+                progressHandler: logProgress(id)
+            )
+            print("Loaded TranslateGemma: \(id)")
+            return container
+        }
+        translateGemmaTask = task
+        return try await task.value
+    }
+
     public func embeddingContainer() async throws -> EmbeddingModelContainer {
         let downloader = self.downloader
         let tokenizerLoader = self.tokenizerLoader
@@ -265,6 +289,36 @@ public enum ChatSessionTests {
         try check(
             response2.lowercased().contains("alice"),
             "Expected 'Alice' in response, got: \(response2)"
+        )
+    }
+
+    /// Greedy end-to-end translation through the Gemma 3 text path.
+    /// TranslateGemma's chat template requires the source/target languages, supplied via
+    /// `UserInput.additionalContext`; English input should yield a French translation.
+    public static func translation(container: LMModelContainer) async throws {
+        let input = UserInput(
+            chat: [.user("Hello, how are you?")],
+            additionalContext: ["source_lang_code": "en", "target_lang_code": "fr"]
+        )
+        let result = try await container.perform(nonSendable: input) { context, input in
+            let lmInput = try await context.processor.prepare(input: input)
+            let stream = try generate(
+                input: lmInput, parameters: generateParameters, context: context)
+            var text = ""
+            print("Translation: ", terminator: "")
+            for try await generation in stream {
+                if case .chunk(let chunk) = generation {
+                    print(chunk, terminator: "")
+                    text += chunk
+                }
+            }
+            print()
+            return text
+        }
+        let lowered = result.lowercased()
+        try check(
+            lowered.contains("bonjour") || lowered.contains("comment"),
+            "Expected a French translation (e.g. 'Bonjour'/'comment'), got: \(result)"
         )
     }
 
