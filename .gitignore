@@ -95,3 +95,6 @@ iOSInjectionProject/
 .idea
 .vscode
 
+# Working docs (plans, specs, research notes) — keep out of commits
+docs/
+
