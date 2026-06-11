@@ -53,8 +53,12 @@ public protocol LogitProcessor {
 /// for the `TokenIterator`.
 public struct GenerateParameters: Sendable {
 
-    /// Step size for processing the prompt
-    public var prefillStepSize: Int
+    /// Step size for processing the prompt.
+    ///
+    /// `nil` lets each model pick its own prefill chunk size (e.g. the Gemma 3 text
+    /// path is tuned to a smaller chunk than the generic 512-token default). Set an
+    /// explicit value to override the model's choice.
+    public var prefillStepSize: Int?
 
     /// Maximum tokens to generate
     public var maxTokens: Int?
@@ -118,7 +122,7 @@ public struct GenerateParameters: Sendable {
         presenceContextSize: Int = 20,
         frequencyPenalty: Float? = nil,
         frequencyContextSize: Int = 20,
-        prefillStepSize: Int = 512
+        prefillStepSize: Int? = nil
     ) {
         self.maxTokens = maxTokens
         self.maxKVSize = maxKVSize
@@ -615,7 +619,7 @@ public struct TokenIterator: TokenIteratorProtocol {
     ///   - maxTokens: maximum number of tokens to generate
     public init(
         input: LMInput, model: any LanguageModel, cache: [KVCache]? = nil,
-        processor: LogitProcessor?, sampler: LogitSampler, prefillStepSize: Int = 512,
+        processor: LogitProcessor?, sampler: LogitSampler, prefillStepSize: Int? = nil,
         maxTokens: Int? = nil
     ) throws {
         self.model = model

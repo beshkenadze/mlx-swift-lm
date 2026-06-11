@@ -430,12 +430,41 @@ public class Gemma3TextModel: Module, LLMModel {
             return .tokens(.init(tokens: emptyToken))
         }
 
-        return .tokens(input.text)
+        // Prefill all but the last token through the inner model, skipping the
+        // large-vocabulary (262k) lm_head: only the KV cache update matters here, and
+        // the discarded hidden states are never evaluated thanks to lazy evaluation.
+        // This is the bulk of the speedup over feeding the whole prompt to the
+        // TokenIterator (which would run lm_head over every prompt position).
+        //
+        // The chunk size honours an explicit `windowSize` (the prefill step a caller
+        // sets via `GenerateParameters.prefillStepSize`) and otherwise defaults to a
+        // value tuned for this model on Apple Silicon: a 128-token chunk gives the
+        // best overlap between CPU graph-building and GPU evaluation via `asyncEval`.
+        // Larger chunks lose that pipelining; smaller ones drown in per-launch
+        // overhead. Capped at the sliding window so the rotating-cache masks built in
+        // `Gemma3Model.callAsFunction` stay valid across chunk boundaries.
+        let prefillStepSize = Swift.min(
+            windowSize ?? Self.defaultPrefillChunkSize, config.slidingWindow)
+        var y = input.text
+        while y.tokens.size > 1 {
+            let n = Swift.min(prefillStepSize, y.tokens.size - 1)
+            _ = model(y[.newAxis, ..<n].tokens, mask: nil, cache: cache)
+            asyncEval(cache)
+            y = y[n...]
+        }
+
+        // The remaining token primes the TokenIterator: it runs through the full
+        // model (with lm_head) to produce the first logits.
+        return .tokens(y)
     }
 
     public func messageGenerator(tokenizer: Tokenizer) -> MessageGenerator {
         Gemma3MessageGenerator()
     }
+
+    /// Default prompt prefill chunk size when the caller does not set one, tuned for
+    /// the Gemma 3 text path on Apple Silicon.
+    private static let defaultPrefillChunkSize = 128
 }
 
 /// Message generator for the Gemma 3 text path.
