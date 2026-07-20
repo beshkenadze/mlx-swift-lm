@@ -1,0 +1,31 @@
+name: omni-bench integration
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/omni_bench_integration.yml"
+      - "Integrations/OmniBench/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/omni_bench_integration.yml"
+      - "Integrations/OmniBench/**"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Test optional omni-bench adapter
+        env:
+          OMNI_BENCH_READ_TOKEN: ${{ secrets.OMNI_BENCH_READ_TOKEN }}
+        run: |
+          test -n "$OMNI_BENCH_READ_TOKEN"
+          git config --global \
+            url."https://x-access-token:${OMNI_BENCH_READ_TOKEN}@github.com/beshkenadze/omni-bench.git".insteadOf \
+            "https://github.com/beshkenadze/omni-bench.git"
+          swift test --package-path Integrations/OmniBench
