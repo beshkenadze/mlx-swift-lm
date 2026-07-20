@@ -11,7 +11,7 @@ let package = Package(
         .package(name: "mlx-swift-lm", path: "../.."),
         .package(
             url: "https://github.com/beshkenadze/omni-bench.git",
-            revision: "ae6e78f4804f4f1322f3cace5af82b4a5e156a92"
+            revision: "17e39c9be2dbc7eaca4a968379984bf97c00134d"
         ),
         .package(
             url: "https://github.com/ml-explore/mlx-swift",
