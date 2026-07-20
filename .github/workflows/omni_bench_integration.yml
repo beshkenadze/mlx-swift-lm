@@ -1,0 +1,24 @@
+name: omni-bench integration
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/omni_bench_integration.yml"
+      - "Integrations/OmniBench/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/omni_bench_integration.yml"
+      - "Integrations/OmniBench/**"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Test optional omni-bench adapter
+        run: swift test --package-path Integrations/OmniBench
