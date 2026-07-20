@@ -194,7 +194,7 @@ struct RunOutput: Sendable {
 typealias EventSink = (String) throws -> Void
 typealias Runner = (String, GenerationControls, EventSink?) async throws -> RunOutput
 
-public final class MLXLMGenerator: Generator, StreamingGenerator {
+public final class MLXLMGenerator: Generator, StreamingGenerator, @unchecked Sendable {
     private let runner: Runner
 
     public init(container: ModelContainer) {
