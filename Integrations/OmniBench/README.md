@@ -27,3 +27,43 @@ manifest pins the reviewed omni-bench core revision that defines the host seam.
 ```bash
 swift test --package-path Integrations/OmniBench
 ```
+
+## Private model qualification
+
+The nested package also exposes `omni-bench-mlx-lm`, a local-only runner that
+loads an already downloaded model directory and writes a canonical core
+RunArtifact. Prepare the production Task with core first, then run the batch and
+streaming profiles separately:
+
+```bash
+swift run --package-path Integrations/OmniBench omni-bench-mlx-lm \
+  --model-directory /absolute/path/to/model \
+  --model-id organization/model \
+  --model-artifact-sha256 sha256:<digest> \
+  --quantization 4bit \
+  --manifest /absolute/path/to/textgen.performance.standard.v1/manifest.json \
+  --registry-bundle /absolute/path/to/omni-bench/fixtures/consumer-bundle \
+  --out /private/output/run-artifact.jsonl \
+  --mode streaming \
+  --backend-version <mlx-swift-lm-commit> \
+  --implementation MLXLMGenerator \
+  --environment-label private-local-qualification \
+  --output-tokens 256 \
+  --chunk-ms 100
+```
+
+Use `--mode batch` for `text_generation.batch_single.v1`; `--chunk-ms` only
+affects streaming identity. The runner fixes concurrency to `1` and defaults to
+the Task card's deterministic 256-token controls. It deliberately does not
+support load claims while the adapter advertises `max_concurrency = 1`.
+
+MLX command-line tools must be able to locate the compiled Metal library. When
+running outside Xcode, follow the upstream `mlx-swift` command-line guidance:
+make the build framework visible through `DYLD_FRAMEWORK_PATH`, or place the
+matching generated `mlx.metallib` beside the executable. Never commit the model,
+Metal library, prepared data, RunArtifact, or Result.
+
+Score the artifact with the exact pinned core and private references. A single
+successful Result is qualification evidence, not a stable or publishable
+performance baseline; public claims require the registered repeated-run
+analysis and publication policy.
