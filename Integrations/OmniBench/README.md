@@ -58,14 +58,48 @@ swift run --package-path Integrations/OmniBench omni-bench-mlx-lm \
 
 Use `--mode batch` for `text_generation.batch_single.v1`; `--chunk-ms` only
 affects streaming identity. The runner fixes concurrency to `1` and defaults to
-the Task card's deterministic 256-token controls. It deliberately does not
-support load claims while the adapter advertises `max_concurrency = 1`.
+`min_output_tokens=0` and `max_output_tokens=256`. Use `--output-tokens N` for
+performance Tasks that require exactly `N` generated tokens, or set
+`--min-output-tokens` and `--max-output-tokens` separately for quality Tasks
+whose output may terminate naturally. It deliberately does not support load
+claims while the adapter advertises `max_concurrency = 1`.
+
+For example, a prepared FLORES+ translation Task should allow EOS rather than
+forcing the performance profile's fixed output length:
+
+```bash
+swift run --package-path Integrations/OmniBench omni-bench-mlx-lm \
+  --model-directory /absolute/path/to/model \
+  --model-id organization/model \
+  --model-artifact-sha256 sha256:<digest> \
+  --quantization 4bit \
+  --manifest /absolute/path/to/textgen.mt.flores_plus.en-de.v1/manifest.json \
+  --registry-bundle /absolute/path/to/omni-bench/fixtures/consumer-bundle \
+  --out /private/output/en-de.run-artifact.jsonl \
+  --mode streaming \
+  --backend-version <mlx-swift-lm-commit> \
+  --implementation MLXLMGenerator \
+  --environment-label private-local-qualification \
+  --min-output-tokens 0 \
+  --max-output-tokens 128 \
+  --chunk-ms 100
+```
 
 MLX command-line tools must be able to locate the compiled Metal library. When
-running outside Xcode, follow the upstream `mlx-swift` command-line guidance:
-make the build framework visible through `DYLD_FRAMEWORK_PATH`, or place the
-matching generated `mlx.metallib` beside the executable. Never commit the model,
-Metal library, prepared data, RunArtifact, or Result.
+running outside Xcode, either make the build framework visible through
+`DYLD_FRAMEWORK_PATH`, or place `mlx.metallib` beside the executable. The Metal
+package version must match the `MLX_VERSION` declared by the resolved
+`.build/checkouts/mlx-swift/Package.swift`; that value can differ from the
+`mlx-swift` package tag. One private, reproducible setup is:
+
+```bash
+uv pip install --target /private/mlx-metal --no-deps \
+  'mlx-metal==<resolved-MLX_VERSION>'
+ln -s /private/mlx-metal/mlx/lib/mlx.metallib \
+  "$(swift build --package-path Integrations/OmniBench --show-bin-path)/mlx.metallib"
+```
+
+Never commit the model, Metal library, prepared data, RunArtifact, or Result.
 
 ## Private token diagnostics
 

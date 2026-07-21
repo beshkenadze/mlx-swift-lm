@@ -41,7 +41,8 @@ private struct Arguments {
     let backendVersion: String
     let implementation: String
     let environmentLabel: String?
-    let outputTokens: Int
+    let minOutputTokens: Int
+    let maxOutputTokens: Int
     let chunkMS: Int
     let warmupSamples: Int
 
@@ -63,7 +64,8 @@ private struct Arguments {
             "--model-directory", "--model-id", "--model-artifact-sha256",
             "--quantization", "--manifest", "--registry-bundle", "--out", "--mode",
             "--backend-version", "--implementation", "--environment-label",
-            "--output-tokens", "--chunk-ms", "--warmup-samples",
+            "--output-tokens", "--min-output-tokens", "--max-output-tokens",
+            "--chunk-ms", "--warmup-samples",
         ]
         let unknown = Set(values.keys).subtracting(allowed)
         guard unknown.isEmpty else {
@@ -100,7 +102,26 @@ private struct Arguments {
         backendVersion = try required("--backend-version")
         implementation = try required("--implementation")
         environmentLabel = values["--environment-label"]
-        outputTokens = try integer("--output-tokens", default: 256, minimum: 1)
+        if values["--output-tokens"] != nil
+            && (values["--min-output-tokens"] != nil || values["--max-output-tokens"] != nil)
+        {
+            throw QualificationError.usage(
+                "--output-tokens cannot be combined with --min-output-tokens or --max-output-tokens")
+        }
+        if let exact = values["--output-tokens"] {
+            guard let parsed = Int(exact), parsed >= 1 else {
+                throw QualificationError.usage("--output-tokens must be >= 1")
+            }
+            minOutputTokens = parsed
+            maxOutputTokens = parsed
+        } else {
+            minOutputTokens = try integer("--min-output-tokens", default: 0, minimum: 0)
+            maxOutputTokens = try integer("--max-output-tokens", default: 256, minimum: 1)
+            guard maxOutputTokens >= minOutputTokens else {
+                throw QualificationError.usage(
+                    "--max-output-tokens must be >= --min-output-tokens")
+            }
+        }
         chunkMS = try integer("--chunk-ms", default: 100, minimum: 1)
         warmupSamples = try integer("--warmup-samples", default: 0, minimum: 0)
 
@@ -119,8 +140,8 @@ private struct Arguments {
             "warmup_samples": warmupSamples,
             "concurrency": 1,
             "family_parameters": [
-                "min_output_tokens": outputTokens,
-                "max_output_tokens": outputTokens,
+                "min_output_tokens": minOutputTokens,
+                "max_output_tokens": maxOutputTokens,
                 "temperature": 0.0,
                 "top_p": 1.0,
                 "seed": 0,
