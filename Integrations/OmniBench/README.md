@@ -86,10 +86,20 @@ swift run --package-path Integrations/OmniBench omni-bench-mlx-lm \
 ```
 
 MLX command-line tools must be able to locate the compiled Metal library. When
-running outside Xcode, follow the upstream `mlx-swift` command-line guidance:
-make the build framework visible through `DYLD_FRAMEWORK_PATH`, or place the
-matching generated `mlx.metallib` beside the executable. Never commit the model,
-Metal library, prepared data, RunArtifact, or Result.
+running outside Xcode, either make the build framework visible through
+`DYLD_FRAMEWORK_PATH`, or place `mlx.metallib` beside the executable. The Metal
+package version must match the `MLX_VERSION` declared by the resolved
+`.build/checkouts/mlx-swift/Package.swift`; that value can differ from the
+`mlx-swift` package tag. One private, reproducible setup is:
+
+```bash
+uv pip install --target /private/mlx-metal --no-deps \
+  'mlx-metal==<resolved-MLX_VERSION>'
+ln -s /private/mlx-metal/mlx/lib/mlx.metallib \
+  "$(swift build --package-path Integrations/OmniBench --show-bin-path)/mlx.metallib"
+```
+
+Never commit the model, Metal library, prepared data, RunArtifact, or Result.
 
 ## Private token diagnostics
 
