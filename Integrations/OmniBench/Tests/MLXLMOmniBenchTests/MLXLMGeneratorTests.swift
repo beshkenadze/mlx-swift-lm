@@ -70,6 +70,14 @@ final class MLXLMGeneratorTests: XCTestCase {
         XCTAssertFalse(noStops.shouldMaskStopTokens)
     }
 
+    func testGeneratedTextNormalizerTrimsOnlyTheInitialSpace() {
+        var normalizer = GeneratedTextNormalizer()
+        XCTAssertEqual(normalizer.append(""), "")
+        XCTAssertEqual(normalizer.append(" "), "")
+        XCTAssertEqual(normalizer.append("hello"), "hello")
+        XCTAssertEqual(normalizer.append(" world"), " world")
+    }
+
     func testStreamingEmitsOneEventPerRawTokenIncludingEmptyText() async throws {
         let generator = MLXLMGenerator { prompt, controls, emit in
             XCTAssertEqual(prompt, "hello")
