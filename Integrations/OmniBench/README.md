@@ -8,6 +8,8 @@ The adapter:
 
 - applies the identity-bearing `min_output_tokens`, `max_output_tokens`,
   `temperature`, `top_p`, and nullable `seed` controls;
+- tokenizes the final manifest-bound prompt directly and never applies a model
+  chat template or other host-specific prompt wrapper;
 - uses a fresh MLX KV cache for every sample;
 - supports batch and true raw-token streaming;
 - emits exactly one `TokenEvent` per generated model token, including an empty
