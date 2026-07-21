@@ -3,12 +3,12 @@ import Foundation
 import MLX
 
 import struct MLXLMCommon.GenerateParameters
+import struct MLXLMCommon.LMInput
 import protocol MLXLMCommon.LogitProcessor
 import class MLXLMCommon.ModelContainer
 import struct MLXLMCommon.NaiveStreamingDetokenizer
 import enum MLXLMCommon.TokenGeneration
 import struct MLXLMCommon.TokenIterator
-import struct MLXLMCommon.UserInput
 import func MLXLMCommon.generateTokenTask
 import struct OmniBench.Capabilities
 import struct OmniBench.Generation
@@ -253,8 +253,11 @@ public final class MLXLMGenerator: Generator, StreamingGenerator, @unchecked Sen
                 MLXRandom.seed(UInt64(bitPattern: Int64(seed)))
             }
 
-            let input = try await context.processor.prepare(
-                input: UserInput(prompt: .text(request.prompt))
+            // omni-bench manifests already contain the final, protocol-bound
+            // prompt. Applying a model chat template here would silently change
+            // the benchmark input and make cross-host parity impossible.
+            let input = LMInput(
+                tokens: MLXArray(context.tokenizer.encode(text: request.prompt))
             )
             let parameters = GenerateParameters(
                 maxTokens: request.controls.maxOutputTokens,
