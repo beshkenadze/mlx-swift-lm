@@ -7,6 +7,8 @@ let package = Package(
     products: [
         .library(name: "MLXLMOmniBench", targets: ["MLXLMOmniBench"]),
         .executable(name: "omni-bench-mlx-lm", targets: ["OmniBenchMLXLMCLI"]),
+        .executable(
+            name: "omni-bench-mlx-lm-trace", targets: ["OmniBenchMLXLMTraceCLI"]),
     ],
     dependencies: [
         .package(name: "mlx-swift-lm", path: "../.."),
@@ -40,6 +42,17 @@ let package = Package(
                 .product(name: "HuggingFace", package: "swift-huggingface"),
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "OmniBench", package: "omni-bench"),
+            ]
+        ),
+        .executableTarget(
+            name: "OmniBenchMLXLMTraceCLI",
+            dependencies: [
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXHuggingFace", package: "mlx-swift-lm"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
+                .product(name: "Tokenizers", package: "swift-transformers"),
             ]
         ),
         .testTarget(

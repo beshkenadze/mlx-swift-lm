@@ -191,6 +191,19 @@ struct RunOutput: Sendable {
     let generatedTokens: Int
 }
 
+struct GeneratedTextNormalizer {
+    private var hasText = false
+
+    mutating func append(_ delta: String) -> String {
+        var normalized = delta
+        if !hasText, normalized.first == " " {
+            normalized.removeFirst()
+        }
+        if !normalized.isEmpty { hasText = true }
+        return normalized
+    }
+}
+
 typealias EventSink = (String) throws -> Void
 typealias Runner = (String, GenerationControls, EventSink?) async throws -> RunOutput
 
@@ -294,6 +307,7 @@ public final class MLXLMGenerator: Generator, StreamingGenerator, @unchecked Sen
             )
 
             var detokenizer = NaiveStreamingDetokenizer(tokenizer: context.tokenizer)
+            var textNormalizer = GeneratedTextNormalizer()
             var pieces: [String] = []
             var generatedTokens = 0
             var completionCount: Int?
@@ -302,7 +316,7 @@ public final class MLXLMGenerator: Generator, StreamingGenerator, @unchecked Sen
                     switch event {
                     case .token(let token):
                         detokenizer.append(token: token)
-                        let delta = detokenizer.next() ?? ""
+                        let delta = textNormalizer.append(detokenizer.next() ?? "")
                         pieces.append(delta)
                         generatedTokens += 1
                         try request.emit?(delta)

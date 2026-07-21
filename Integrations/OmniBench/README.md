@@ -10,6 +10,8 @@ The adapter:
   `temperature`, `top_p`, and nullable `seed` controls;
 - tokenizes the final manifest-bound prompt directly and never applies a model
   chat template or other host-specific prompt wrapper;
+- normalizes the optional initial detokenizer space consistently with MLX LM
+  streaming detokenizers while preserving all later whitespace;
 - uses a fresh MLX KV cache for every sample;
 - supports batch and true raw-token streaming;
 - emits exactly one `TokenEvent` per generated model token, including an empty
@@ -64,6 +66,25 @@ running outside Xcode, follow the upstream `mlx-swift` command-line guidance:
 make the build framework visible through `DYLD_FRAMEWORK_PATH`, or place the
 matching generated `mlx.metallib` beside the executable. Never commit the model,
 Metal library, prepared data, RunArtifact, or Result.
+
+## Private token diagnostics
+
+When parity fails, `omni-bench-mlx-lm-trace` records the exact raw prompt token
+IDs and a bounded greedy generated-token prefix without changing the benchmark
+artifact contract:
+
+```bash
+swift run --package-path Integrations/OmniBench omni-bench-mlx-lm-trace \
+  --model-directory /absolute/path/to/model \
+  --manifest /absolute/path/to/manifest.json \
+  --sample-id sample-id \
+  --max-tokens 64 \
+  --out /private/output/token-trace.json
+```
+
+Token traces are reversible model inputs and outputs. Keep them private, compare
+them only against a trace from the exact same model artifact and prompt, and
+never upload them as RunArtifact, Result, or publication evidence.
 
 Score the artifact with the exact pinned core and private references. A single
 successful Result is qualification evidence, not a stable or publishable
