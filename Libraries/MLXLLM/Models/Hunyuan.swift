@@ -64,14 +64,14 @@ class HunyuanAttention: Module {
         keys = keys.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
         values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
 
+        let offset = cache?.ropeOffset
+        queries = applyRotaryPosition(rope, to: queries, offset: offset)
+        keys = applyRotaryPosition(rope, to: keys, offset: offset)
+
         if let queryNorm, let keyNorm {
             queries = queryNorm(queries)
             keys = keyNorm(keys)
         }
-
-        let offset = cache?.ropeOffset
-        queries = applyRotaryPosition(rope, to: queries, offset: offset)
-        keys = applyRotaryPosition(rope, to: keys, offset: offset)
 
         let output = attentionWithCacheUpdate(
             queries: queries,
