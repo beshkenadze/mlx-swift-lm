@@ -2,7 +2,7 @@
 
 import Foundation
 import MLX
-import MLXLLM
+@_spi(GemmaEncoder) @testable import MLXLLM
 import MLXLMCommon
 import MLXNN
 import XCTest
